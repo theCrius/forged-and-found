@@ -1,0 +1,10 @@
+# Third-party mod loader clone (read-only reference, its own git repository)
+shroudforge/
+
+# Game-derived data dumps: large, regenerable with mods/perk-dump, not ours to publish
+research/data/
+
+# Editor / OS noise
+.vscode/
+*.tmp
+Thumbs.db
