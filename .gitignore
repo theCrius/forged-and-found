@@ -4,6 +4,9 @@ shroudforge/
 # Game-derived data dumps: large, regenerable with mods/perk-dump, not ours to publish
 research/data/
 
+# Third-party tool binaries (downloaded, not ours): Iced disassembler package
+tools/iced/
+
 # Editor / OS noise
 .vscode/
 *.tmp
