@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.5.0 (test worlds only).
+-- Perk Variants prototype 0.5.1 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -478,7 +478,8 @@ end
 -- Theme perks come from the item's wide group pool, swapped for the member of
 -- their tier line that fits the item's tier. Skills only from the item's class
 -- (melee weapons/shields Warrior, bows/daggers Ranger, staffs/wands Mage,
--- armor by class) or Generic; a skill appears once per item.
+-- armor by class) or Generic; a skill appears once per item. Every second
+-- variant is a hybrid whose skill slot and capstone come from another class.
 ---------------------------------------------------------------------------
 
 local THEMES = { "Sustain", "Empower", "Elemental", "Physical", "Crit", "Enhance" }
@@ -526,10 +527,19 @@ end
 
 local function skill_base(p) return ((perk_names[p] or ""):gsub("_%d+$", "")) end
 
-local function roll_perks(guid, info, theme, attempt)
+local function roll_perks(guid, info, theme, attempt, hybrid)
     local next_int = rng(ROLL_SEED .. "|" .. guid .. "|" .. theme .. "|" .. attempt)
     local class = known_class(info) or CLASSES[next_int(#CLASSES)]
     local resource = CLASS_RESOURCE[class]
+    -- Hybrid variants (paladin, spellblade, battle mage, ...) take their character
+    -- skills from a second class: the skill slot and the capstone; Enhance mixes
+    -- both classes (even slots from the second one).
+    local secondary
+    if hybrid then
+        local others = {}
+        for _, c in ipairs(CLASSES) do if c ~= class then others[#others + 1] = c end end
+        secondary = others[next_int(#others)]
+    end
 
     local elements
     if theme == "Elemental" then
@@ -555,7 +565,7 @@ local function roll_perks(guid, info, theme, attempt)
     local function allowed(p)
         local c = perk_class[p]
         if c then
-            if c ~= "Generic" and c ~= class then return false end
+            if c ~= "Generic" and c ~= class and c ~= secondary then return false end
             if bases[skill_base(p)] then return false end
         end
         if elements then
@@ -578,9 +588,9 @@ local function roll_perks(guid, info, theme, attempt)
         end
         return ok[next_int(#ok)]
     end
-    local function skill_list(two)
+    local function skill_list(two, of_class)
         local out = {}
-        for _, s in ipairs(skills[class] or {}) do
+        for _, s in ipairs(skills[of_class or class] or {}) do
             local q = two and s.two or s.one
             if q then out[#out + 1] = q end
         end
@@ -605,10 +615,16 @@ local function roll_perks(guid, info, theme, attempt)
         elseif slot == 1 and info.anchor then
             q = vanilla
         else
+            -- Skill class of this slot: the second class for hybrids' skill slot and
+            -- capstone, and for every even slot of a hybrid Enhance variant.
+            local skill_class = class
+            if secondary and (slot == 5 or slot == SKILL_SLOT or (theme == "Enhance" and slot % 2 == 0)) then
+                skill_class = secondary
+            end
             if slot == 5 and info.legendary then
-                q = pick(skill_list(true)) or pick(skill_list(false))
+                q = pick(skill_list(true, skill_class)) or pick(skill_list(false, skill_class))
             elseif theme == "Enhance" or slot == SKILL_SLOT then
-                q = pick(skill_list(false))
+                q = pick(skill_list(false, skill_class))
             elseif next_int(1000) <= THEME_STRAY * 1000 then
                 q = pick(any_list())
             end
@@ -625,7 +641,7 @@ local function roll_perks(guid, info, theme, attempt)
             if perk_class[q] then bases[skill_base(q)] = true end
         end
     end
-    return result
+    return result, secondary
 end
 -- Acceptance: a variant must be visibly different from vanilla (>= MIN_CHANGES
 -- of the slots an epic shows) and not a reshuffle of vanilla or a sibling
@@ -793,14 +809,17 @@ for _, original in ipairs(item_order) do
     for k = 1, #themes > 0 and MAX_VARIANTS * 2 or 0 do
         if #list >= MAX_VARIANTS then break end
         local theme = themes[(k - 1) % #themes + 1]
+        -- Every second variant (3 of 6) is a hybrid: its skills come from a second
+        -- class, to encourage mixing builds (developer's call).
+        local hybrid = (#list + 1) % 2 == 0
         for attempt = 1, ROLL_ATTEMPTS do
-            local perks = roll_perks(original, info, theme, k * 100 + attempt)
+            local perks, secondary = roll_perks(original, info, theme, k * 100 + attempt, hybrid)
             local signature = table.concat(perks, ",")
             if not seen[signature] and acceptable(perks, info, list) then
                 seen[signature] = true
                 local index = #list + 1
                 local v = create_variant(original, info, source, index, perks)
-                v.theme = theme
+                v.theme = secondary and (theme .. "+" .. secondary) or theme
                 list[index] = v
                 variants[#variants + 1] = v
                 stats.rolled = stats.rolled + 1
