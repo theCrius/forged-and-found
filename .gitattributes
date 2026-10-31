@@ -1,0 +1,2 @@
+# Shipped data whose bytes the mod re-exports and compares: keep exactly as written.
+mods/perk-variants/data/pinned.txt -text

@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.3.0 (test worlds only).
+-- Perk Variants prototype 0.3.1 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks this creates up
 -- to MAX_VARIANTS variants (clones with rerolled perks) and registers each one
