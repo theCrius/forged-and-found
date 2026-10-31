@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.5.3 (test worlds only).
+-- Perk Variants prototype 0.6.0 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
