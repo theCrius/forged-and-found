@@ -1,13 +1,14 @@
--- Perk Variants prototype 0.2.8 (test worlds only).
+-- Perk Variants prototype 0.2.9 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks this creates up
 -- to MAX_VARIANTS variants (clones with rerolled perks) and registers each one
 -- everywhere the game looks items up by ItemId or GUID:
---   - ItemInfo clone
---   - UiTextureResource clone of the original's pre-rendered icon under the
---     variant's GUID (container slots look icons up by the item's own GUID and
---     ignore ItemInfo.iconImage, 0.2.6). The UI texture loader has a fixed
---     number of slots, which caps the total number of variants.
+--   - ItemInfo clone that keeps the original's objectId. The item icon renderer
+--     ("doItemRenderFrame", enshrouded.exe+0xBEFAE0 -> +0xCF5260) loads the
+--     UiTextureResource named by ItemInfo.objectId (+4), so variants show the
+--     original's pre-rendered icon and need no texture of their own (the UI
+--     texture loader has a fixed number of slots). EXPERIMENT: other code may
+--     also use objectId as the item's identity.
 --   - ItemRegistryResource (itemRefs + dbgNames) and LootableItemsResource.items
 --     (parallel arrays, appended at the same index)
 --   - ItemKnowledgeResource (StaticHashMap ItemId -> ItemKnowledge)
@@ -57,14 +58,13 @@ if not loader.features.patch then
 end
 
 local SEED = "perk-variants/v0"
--- Each variant needs its own icon texture, and the UI texture loader seems to hold
--- ~8192 (inferred from the 0.2.3 dump) of which vanilla uses ~4888: about 3300
--- variants, so 2 per item (~2460). 4 per item ran out of textures (0.2.3); 8 also
--- overflowed a ~4 MiB buffer during zstd decompression (0.2.2-0.2.5, cause unknown).
-local MAX_VARIANTS = 2
+-- Without textures per variant, 4 per item starts fine (0.2.6); 8 per item
+-- overflows a ~4 MiB buffer during zstd decompression at startup (0.2.2-0.2.5,
+-- cause unknown).
+local MAX_VARIANTS = 4
 -- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
 -- the rest drop from presets only.
-local RANDOM_LOOT_VARIANTS = 2
+local RANDOM_LOOT_VARIANTS = 4
 local ROLL_ATTEMPTS = MAX_VARIANTS * 4 -- rolls tried per item to find distinct variants
 local MIN_CHOICES = 2                  -- a slot pool needs this many candidates before falling back to a wider one
 local MAX_SAME_PERK = 2                -- the same perk at most twice on one item
@@ -381,12 +381,11 @@ for _, original in ipairs(item_order) do
             local data = item.data
             local name = info.name .. "__PV" .. index
             data.itemId.value = id
-            data.objectId = guid
+            -- objectId stays the original's GUID: the icon renderer loads the texture
+            -- named by objectId. Setting it to the variant's GUID made chests assert
+            -- "corrupted game ui texture" (0.2.6); cloning textures instead caps the
+            -- total at ~2 variants per item (UI texture slots, 0.2.3/0.2.7).
             data.debugName = name
-            -- Icon: clone the original's pre-rendered texture under the variant's GUID.
-            -- Pointing iconImage at the original is not enough: container slots look
-            -- the texture up by the item's own GUID ("corrupted game ui texture", 0.2.6).
-            game.assets.create_resource(icon.data, "keen::UiTextureResource", guid, 0)
             for slot, p in ipairs(perks) do
                 if p ~= NONE and p ~= info.perks[slot] then
                     data.perkReferences[slot] = p
@@ -669,9 +668,9 @@ for _, original in ipairs(item_order) do
     end
 end
 for _, v in ipairs(variants) do
-    -- Every variant needs its own icon texture (looked up by the variant's GUID).
-    if not game.assets.get_resource(v.guid, "keen::UiTextureResource", 0) then
-        error("perk-variants: variant " .. v.name .. " has no icon texture")
+    -- Variants show the texture named by their objectId, i.e. the original's.
+    if not game.assets.get_resource(v.original, "keen::UiTextureResource", 0) then
+        error("perk-variants: original of " .. v.name .. " has no icon texture")
     end
 end
 
