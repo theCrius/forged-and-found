@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.2.9 (test worlds only).
+-- Perk Variants prototype 0.2.10 (test worlds only; PAIR_TEST on).
 --
 -- Vanilla items are never changed. For every item with perks this creates up
 -- to MAX_VARIANTS variants (clones with rerolled perks) and registers each one
@@ -65,6 +65,9 @@ local MAX_VARIANTS = 4
 -- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
 -- the rest drop from presets only.
 local RANDOM_LOOT_VARIANTS = 4
+-- TEST switch: preset entries that always spawn drop the original AND a variant,
+-- so both can be compared side by side. false = normal behaviour (variant only).
+local PAIR_TEST = true
 local ROLL_ATTEMPTS = MAX_VARIANTS * 4 -- rolls tried per item to find distinct variants
 local MIN_CHOICES = 2                  -- a slot pool needs this many candidates before falling back to a wider one
 local MAX_SAME_PERK = 2                -- the same perk at most twice on one item
@@ -515,6 +518,19 @@ do
                     end
                     retarget(group.stacks[i], list[1], weight)
                     in_selectors = in_selectors + 1
+                elseif PAIR_TEST then
+                    -- TEST: every entry spawns, so keep the original and add one variant next
+                    -- to it (as 0.1.4 did): each such spot drops a vanilla/variant pair for a
+                    -- side-by-side check. Prefer a variant whose slot 1 differs from vanilla,
+                    -- the only slot a common drop shows.
+                    in_plain = in_plain + 1
+                    local vanilla_first = items[group.stacks[i].itemRef].perks[1]
+                    local pick = list[1]
+                    for _, v in ipairs(list) do
+                        if v.perks[1] ~= vanilla_first then pick = v; break end
+                    end
+                    table.insert(group.stacks, i + 1, group.stacks[i]) -- clone of the untouched original
+                    retarget(group.stacks[i + 1], pick, group.stacks[i].weight)
                 else
                     -- Every entry spawns: retarget the stack to one variant, taking the
                     -- variants in turn across all plain stacks (deterministic for a given
@@ -539,8 +555,8 @@ do
         end
         if relevant and walk(r.data.rootGroup) > 0 then touched = touched + 1 end
     end
-    log(string.format("presets: %d inventories; %d stacks split in selector groups, %d plain stacks retargeted",
-        touched, in_selectors, in_plain))
+    log(string.format("presets: %d inventories; %d stacks split in selector groups, %d plain stacks %s",
+        touched, in_selectors, in_plain, PAIR_TEST and "given a variant next to the original (PAIR_TEST)" or "retargeted"))
 end
 
 ---------------------------------------------------------------------------
