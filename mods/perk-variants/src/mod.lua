@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.4.1 (test worlds only).
+-- Perk Variants prototype 0.4.2 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -82,6 +82,16 @@ local DEFAULT_FAMILY_CAP = 2
 local THEME_BIAS = 0.6                  -- chance that a slot is limited to the variant's theme (if the pool has any)
 local MIN_CHANGES = 2                   -- a variant differs from vanilla in >= 2 of the slots an epic shows (1-4)
 local MIN_DISTINCT = 2                  -- ... and from each sibling variant in >= 2 perks (as a multiset)
+-- Core skills about building, gathering and fishing never roll on equipment
+-- (developer's rule: equipment is for fighting). Vanilla items keep theirs.
+local EXCLUDED_PERKS = {
+    "^Perk_Skill_Level_Generic_Lumberjack", "^Perk_Skill_Level_Generic_Mason",
+    "^Perk_Skill_Level_Generic_Prospector", "^Perk_Skill_Level_Generic_Miner",
+    "^Perk_Skill_Level_Generic_FishermansResolve",
+}
+-- Elemental variants commit to one element; items named after an element
+-- (e.g. Weapon_T3_1H_Wand_01_Fire) keep their first perk. "Fog" is Shroud.
+local ELEMENTS = { "Fire", "Ice", "Lightning", "Poison", "Fog" }
 local NONE = game.guid.NONE
 local u32 = integer.u32
 
@@ -233,6 +243,7 @@ local line_members = {}   -- tier line -> list of { guid, lo, hi }
 
 local function theme_of(body)
     if body:find("^Skill_Level") then return "Skill" end
+    if body:find("^Damage_Against") then return "Physical" end -- before elements: "Fogger" contains "Fog"
     if body:find("^Armor") or body:find("^Max_Adder") or body:find("^Resistance") then return "Vitality" end
     if body:find("Crit") then return "Precision" end
     if body:find("^Leech") or body:find("^Recharge") or body:find("^OnKill") or body:find("Restore") then return "Sustain" end
@@ -321,7 +332,16 @@ local items, item_order = {}, {}  -- guid -> { name, perks, group, class, id, ti
 local used_ids = {}                -- ItemId -> true, to detect collisions
 local pools = {}                   -- key -> { list, seen }; one entry per tier line
 
+local function excluded(perk)
+    local name = perk_names[perk] or ""
+    for _, pattern in ipairs(EXCLUDED_PERKS) do
+        if name:find(pattern) then return true end
+    end
+    return false
+end
+
 local function pool_add(key, perk)
+    if excluded(perk) then return end
     local p = pools[key]
     if not p then p = { list = {}, seen = {} }; pools[key] = p end
     local k = perk_line[perk] or perk
@@ -363,6 +383,12 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
             tier = tonumber(name:match("_T(%d+)")), gen = gen, disabled = disabled,
             legendary = legendary, eligible = (epic or legendary) and not special,
         }
+        -- Identity anchor: rings (Ring of Health, of Mana, ...) and items named after
+        -- an element keep their first perk; a Ring of Health without Health is wrong.
+        info.anchor = info.group == "Ring"
+        for _, e in ipairs(ELEMENTS) do
+            if name:find("_" .. e .. "_") or name:find("_" .. e .. "$") then info.anchor = true end
+        end
         items[r.guid] = info
         item_order[#item_order + 1] = r.guid
         if info.eligible then eligible_count = eligible_count + 1 end
@@ -392,7 +418,10 @@ log(string.format("%d registered items have perks, %d can drop as Epic or Legend
 -- probability THEME_BIAS the candidates are narrowed to the theme, if any fit
 -- (soft themes: pools never get too narrow). Every pick is swapped for the
 -- member of its tier line that fits the item's tier. Slot 5 of items that can
--- be Legendary is the capstone: drawn from the group#cap pool, one tier up.
+-- be Legendary is the capstone: drawn from the group#cap pool, one tier up,
+-- preferring strong perks (no damage vs one creature type, no utility).
+-- Elemental variants commit to one element. Rings and element-named items keep
+-- slot 1 (identity). Building/gathering/fishing skills never roll.
 -- Same perk at most MAX_SAME_PERK times, a family at most its cap.
 ---------------------------------------------------------------------------
 
@@ -426,9 +455,42 @@ local function roll_perks(guid, info, attempt)
     end
     local theme = (#themes > 0) and themes[next_int(#themes)] or nil
 
+    -- An elemental variant commits to one element offered by the pool; perks of
+    -- other elements are then not allowed at all (no Ice + Fire + Shroud mixes).
+    local function element_of(p)
+        if perk_theme[p] ~= "Elemental" then return nil end
+        local name = perk_names[p] or ""
+        for _, e in ipairs(ELEMENTS) do if name:find(e) then return e end end
+        return nil
+    end
+    local element
+    if theme == "Elemental" then
+        local offered = {}
+        for _, e in ipairs(ELEMENTS) do
+            for _, p in ipairs(group_pool.list) do
+                if element_of(p) == e then offered[#offered + 1] = e; break end
+            end
+        end
+        element = (#offered > 0) and offered[next_int(#offered)] or nil
+    end
+    local function in_theme(q)
+        return perk_theme[q] == theme and (not element or element_of(q) == element)
+    end
+
+    -- Capstones should feel like the reward for a legendary: no damage against a
+    -- single creature type, no utility perks, no durability restore.
+    local function strong(q)
+        if perk_family[q] == "DamageAgainst" or perk_theme[q] == "Utility" then return false end
+        return not (perk_names[q] or ""):find("Restore_Durability")
+    end
+
     local same, family = {}, {}
     local function allowed(p)
         if not class_ok(p) then return false end
+        if element then
+            local e = element_of(p)
+            if e and e ~= element then return false end
+        end
         if (same[p] or 0) >= MAX_SAME_PERK then return false end
         local f = perk_family[p]
         if (family[f] or 0) >= (FAMILY_CAP[f] or DEFAULT_FAMILY_CAP) then return false end
@@ -438,7 +500,7 @@ local function roll_perks(guid, info, attempt)
     local result = {}
     for slot, vanilla in ipairs(info.perks) do
         local pick = vanilla
-        if vanilla ~= NONE then
+        if vanilla ~= NONE and not (slot == 1 and info.anchor) then
             local capstone = slot == 5 and info.legendary
             local tier = info.tier and (capstone and info.tier + 1 or info.tier)
             local keys = capstone and { info.group .. "#cap", info.group .. "#5", info.group }
@@ -452,6 +514,11 @@ local function roll_perks(guid, info, attempt)
                         local q = at_tier(p, tier)
                         if q and allowed(q) then list[#list + 1] = q end
                     end
+                    if capstone then
+                        local good = {}
+                        for _, q in ipairs(list) do if strong(q) then good[#good + 1] = q end end
+                        if #good > 0 then list = good end
+                    end
                     if #list >= MIN_CHOICES then candidates = list; break end
                     if #list > 0 and not candidates then candidates = list end
                 end
@@ -459,7 +526,7 @@ local function roll_perks(guid, info, attempt)
             if candidates then
                 if theme and next_int(1000) <= THEME_BIAS * 1000 then
                     local themed = {}
-                    for _, q in ipairs(candidates) do if perk_theme[q] == theme then themed[#themed + 1] = q end end
+                    for _, q in ipairs(candidates) do if in_theme(q) then themed[#themed + 1] = q end end
                     if #themed > 0 then candidates = themed end
                 end
                 pick = candidates[next_int(#candidates)]
