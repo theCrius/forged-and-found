@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.2.7 (test worlds only).
+-- Perk Variants prototype 0.2.8 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks this creates up
 -- to MAX_VARIANTS variants (clones with rerolled perks) and registers each one
@@ -720,10 +720,13 @@ end
 if loader.features.export then
     local lines = {}
     for i, v in ipairs(variants) do
-        local names = {}
+        local names, vanilla = {}, {}
         for s, p in ipairs(v.perks) do names[s] = perk_names[p] or p end
-        lines[i] = string.format('{"original":"%s","originalId":%d,"index":%d,"name":"%s","variant":"%s","itemId":%d,"perks":["%s"]}',
-            v.original, v.original_id, v.index, v.name, v.guid, v.id, table.concat(names, '","'))
+        -- The original's perks too: low-rarity drops show only the first slot(s), so
+        -- telling a variant from vanilla in game needs the vanilla perks side by side.
+        for s, p in ipairs(items[v.original].perks) do vanilla[s] = perk_names[p] or p end
+        lines[i] = string.format('{"original":"%s","originalId":%d,"index":%d,"name":"%s","variant":"%s","itemId":%d,"perks":["%s"],"vanilla":["%s"]}',
+            v.original, v.original_id, v.index, v.name, v.guid, v.id, table.concat(names, '","'), table.concat(vanilla, '","'))
     end
     io.export("perk-variants/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")
 end
