@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.2.10 (test worlds only; PAIR_TEST on).
+-- Perk Variants prototype 0.3.0 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks this creates up
 -- to MAX_VARIANTS variants (clones with rerolled perks) and registers each one
@@ -7,8 +7,8 @@
 --     ("doItemRenderFrame", enshrouded.exe+0xBEFAE0 -> +0xCF5260) loads the
 --     UiTextureResource named by ItemInfo.objectId (+4), so variants show the
 --     original's pre-rendered icon and need no texture of their own (the UI
---     texture loader has a fixed number of slots). EXPERIMENT: other code may
---     also use objectId as the item's identity.
+--     texture loader has a fixed number of slots). Tested in 0.2.10: variant
+--     and original stay independent (equip, storage, reload, upgrades).
 --   - ItemRegistryResource (itemRefs + dbgNames) and LootableItemsResource.items
 --     (parallel arrays, appended at the same index)
 --   - ItemKnowledgeResource (StaticHashMap ItemId -> ItemKnowledge)
@@ -31,11 +31,12 @@
 --     (a child selector group gave nothing on pickup in 0.2.6).
 -- Not covered: enemy-carried weapons (enemy setup references the item directly).
 --
--- Determinism: variant GUIDs and perk rolls derive only from the original GUID,
--- the variant/attempt index and SEED, so every launch and every machine (client
--- and dedicated server) produces identical variants. ItemId = game.guid.hash(GUID).
--- Variant k of an item always has the same GUID, so items saved as variant 1 by
--- earlier prototypes stay valid (their perks follow the current rolls).
+-- Determinism: variant GUIDs derive only from the original GUID, the variant
+-- index and SEED (ItemId = game.guid.hash(GUID)), so variant k of an item has
+-- the same ItemId on every launch and machine. Perks come from the pinned list
+-- shipped in data/pinned.txt, so game updates cannot reshuffle them; only items
+-- missing from that list are rolled (deterministically from SEED and the
+-- current perk pools) and exported for the next release.
 --
 -- EML notes:
 --   - resource.data is a cached live view; edits to it are tracked (dirty flags
@@ -67,7 +68,7 @@ local MAX_VARIANTS = 4
 local RANDOM_LOOT_VARIANTS = 4
 -- TEST switch: preset entries that always spawn drop the original AND a variant,
 -- so both can be compared side by side. false = normal behaviour (variant only).
-local PAIR_TEST = true
+local PAIR_TEST = false
 local ROLL_ATTEMPTS = MAX_VARIANTS * 4 -- rolls tried per item to find distinct variants
 local MIN_CHOICES = 2                  -- a slot pool needs this many candidates before falling back to a wider one
 local MAX_SAME_PERK = 2                -- the same perk at most twice on one item
@@ -357,47 +358,130 @@ end
 -- Create variants (clone first, then edit only the clone's live view)
 ---------------------------------------------------------------------------
 
-local variants = {}       -- all variants: { original, original_id, index, guid, id, name, perks }
+---------------------------------------------------------------------------
+-- Pinned rolls (data/pinned.txt, shipped with the mod, append-only)
+--
+-- Saves store a variant's ItemId, and its perks come from this list, so a
+-- game update that adds, removes or renames perks cannot silently change the
+-- perks of items players already own. One line per variant:
+--   <original GUID> <index> <variant GUID> <perk GUID per slot ...>  # names
+-- A pinned perk that no longer exists falls back to the original's current
+-- perk for that slot. Items without pinned entries (new in a game update) are
+-- rolled as before; the exported pinned.txt then lists them for the next
+-- release. Pinned variants whose original item is gone cannot be rebuilt.
+---------------------------------------------------------------------------
+
+local PINNED_FILE = "data/pinned.txt"
+local pinned = {}         -- original guid -> list of { index, guid, perks } in index order
+local pinned_count = 0
+if io.exists(PINNED_FILE) then
+    for line in io.read_to_string(PINNED_FILE):gmatch("[^\r\n]+") do
+        local body = line:gsub("%s*#.*$", "")
+        if body ~= "" then
+            local fields = {}
+            for f in body:gmatch("%S+") do fields[#fields + 1] = f end
+            local original, index, guid = fields[1], tonumber(fields[2]), fields[3]
+            if not (original and index and guid and #fields >= 4) then
+                error("perk-variants: malformed line in " .. PINNED_FILE .. ": " .. line)
+            end
+            local list = pinned[original] or {}
+            pinned[original] = list
+            if index ~= #list + 1 then
+                error(string.format("perk-variants: %s: variant %d of %s out of order", PINNED_FILE, index, original))
+            end
+            local perks = {}
+            for k = 4, #fields do perks[#perks + 1] = fields[k] end
+            list[index] = { index = index, guid = guid, perks = perks }
+            pinned_count = pinned_count + 1
+        end
+    end
+    log(string.format("pinned rolls: %d variants read from %s", pinned_count, PINNED_FILE))
+else
+    log("pinned rolls: no " .. PINNED_FILE .. ", rolling every variant")
+end
+
+---------------------------------------------------------------------------
+-- Create variants (clone first, then edit only the clone's live view)
+---------------------------------------------------------------------------
+
+local variants = {}       -- all variants: { original, original_id, index, guid, id, name, perks, pinned }
 local variants_of = {}    -- original guid -> list of its variants
 local count_hist = {}     -- variants per item -> number of items
+local stats = { pinned = 0, rolled = 0, fallback_slots = 0 }
+
+local function create_variant(original, info, source, index, perks)
+    local guid = derive_guid(SEED .. "|" .. original .. "|" .. index)
+    local id = game.guid.hash(guid)
+    if used_ids[id] then error("perk-variants: ItemId collision for " .. info.name .. " #" .. index) end
+    used_ids[id] = true
+
+    local item = game.assets.create_resource(source.data, "keen::ItemInfo", guid, 0)
+    local data = item.data
+    local name = info.name .. "__PV" .. index
+    data.itemId.value = id
+    -- objectId stays the original's GUID: the icon renderer loads the texture
+    -- named by objectId. Setting it to the variant's GUID made chests assert
+    -- "corrupted game ui texture" (0.2.6); cloning textures instead caps the
+    -- total at ~2 variants per item (UI texture slots, 0.2.3/0.2.7).
+    data.debugName = name
+    for slot, p in ipairs(perks) do
+        if p ~= NONE and p ~= info.perks[slot] then
+            data.perkReferences[slot] = p
+            data.perkIds[slot].value = game.guid.hash(p)
+        end
+    end
+    return { original = original, original_id = info.id, index = index, guid = guid, id = id, name = name, perks = perks }
+end
 
 for _, original in ipairs(item_order) do
     local info = items[original]
     local seen = { [table.concat(info.perks, ",")] = true } -- never duplicate vanilla
     local list = {}
     local source = game.assets.get_resource(original, "keen::ItemInfo")
-    local icon = game.assets.get_resource(original, "keen::UiTextureResource", 0)
+    if not game.assets.get_resource(original, "keen::UiTextureResource", 0) then
+        error("perk-variants: no icon texture for " .. info.name)
+    end
+
+    for _, e in ipairs(pinned[original] or {}) do
+        local guid = derive_guid(SEED .. "|" .. original .. "|" .. e.index)
+        if guid ~= e.guid then
+            error(string.format("perk-variants: %s variant %d: GUID %s, pinned %s (derivation changed; saves would lose these items)",
+                info.name, e.index, guid, e.guid))
+        end
+        local perks = {}
+        for slot, vanilla in ipairs(info.perks) do
+            local p = e.perks[slot]
+            -- Keep the item's current slot layout; a pinned perk that no longer
+            -- exists falls back to the original's perk for that slot.
+            if vanilla == NONE or p == nil or p == NONE then
+                perks[slot] = vanilla
+            elseif perk_names[p] then
+                perks[slot] = p
+            else
+                perks[slot] = vanilla
+                stats.fallback_slots = stats.fallback_slots + 1
+                log(string.format("pinned perk %s of %s slot %d no longer exists, using vanilla", p, info.name, slot))
+            end
+        end
+        seen[table.concat(perks, ",")] = true
+        local v = create_variant(original, info, source, e.index, perks)
+        v.pinned = true
+        list[e.index] = v
+        variants[#variants + 1] = v
+        stats.pinned = stats.pinned + 1
+    end
+
     for attempt = 1, ROLL_ATTEMPTS do
         if #list >= MAX_VARIANTS then break end
         local perks = roll_perks(original, info, attempt)
         local signature = table.concat(perks, ",")
         if not seen[signature] then
             seen[signature] = true
-            if not icon then error("perk-variants: no icon texture for " .. info.name) end
             local index = #list + 1
-            local guid = derive_guid(SEED .. "|" .. original .. "|" .. index)
-            local id = game.guid.hash(guid)
-            if used_ids[id] then error("perk-variants: ItemId collision for " .. info.name .. " #" .. index) end
-            used_ids[id] = true
-
-            local item = game.assets.create_resource(source.data, "keen::ItemInfo", guid, 0)
-            local data = item.data
-            local name = info.name .. "__PV" .. index
-            data.itemId.value = id
-            -- objectId stays the original's GUID: the icon renderer loads the texture
-            -- named by objectId. Setting it to the variant's GUID made chests assert
-            -- "corrupted game ui texture" (0.2.6); cloning textures instead caps the
-            -- total at ~2 variants per item (UI texture slots, 0.2.3/0.2.7).
-            data.debugName = name
-            for slot, p in ipairs(perks) do
-                if p ~= NONE and p ~= info.perks[slot] then
-                    data.perkReferences[slot] = p
-                    data.perkIds[slot].value = game.guid.hash(p)
-                end
-            end
-            local v = { original = original, original_id = info.id, index = index, guid = guid, id = id, name = name, perks = perks }
+            local v = create_variant(original, info, source, index, perks)
             list[index] = v
             variants[#variants + 1] = v
+            stats.rolled = stats.rolled + 1
         end
     end
     variants_of[original] = list
@@ -409,6 +493,17 @@ do
         if count_hist[n] then parts[#parts + 1] = n .. " variants: " .. count_hist[n] .. " items" end
     end
     log(string.format("created %d variants (%s)", #variants, table.concat(parts, ", ")))
+    log(string.format("pinned rolls: %d variants from the pinned list (%d slots fell back to vanilla), %d newly rolled (not pinned yet)",
+        stats.pinned, stats.fallback_slots, stats.rolled))
+    local lost = {}
+    for original, list in pairs(pinned) do
+        if not items[original] then lost[#lost + 1] = original .. " (" .. #list .. " variants)" end
+    end
+    table.sort(lost)
+    if #lost > 0 then
+        log(string.format("WARNING: %d pinned items no longer exist or have no perks; their variants cannot be rebuilt and are lost from saves: %s",
+            #lost, table.concat(lost, ", ")))
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -744,5 +839,33 @@ if loader.features.export then
             v.original, v.original_id, v.index, v.name, v.guid, v.id, table.concat(names, '","'), table.concat(vanilla, '","'))
     end
     io.export("perk-variants/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")
+
+    -- Pinned list for the next release: every variant built now, plus pinned
+    -- entries whose item is gone (kept, append-only: the item may come back).
+    local out = {
+        "# perk-variants pinned rolls (append-only; never edit or remove shipped lines)",
+        "# <original GUID> <index> <variant GUID> <perk GUID per slot>  # debug names",
+    }
+    local originals, listed = {}, {}
+    for _, o in ipairs(item_order) do originals[#originals + 1] = o; listed[o] = true end
+    for o in pairs(pinned) do if not listed[o] then originals[#originals + 1] = o end end
+    table.sort(originals)
+    for _, o in ipairs(originals) do
+        local list = variants_of[o]
+        if list and #list > 0 then
+            for _, v in ipairs(list) do
+                local names = {}
+                for s, p in ipairs(v.perks) do names[s] = perk_names[p] or "-" end
+                out[#out + 1] = string.format("%s %d %s %s  # %s: %s", o, v.index, v.guid, table.concat(v.perks, " "),
+                    v.name, table.concat(names, ", "))
+            end
+        elseif pinned[o] then
+            for _, e in ipairs(pinned[o]) do
+                out[#out + 1] = string.format("%s %d %s %s  # original item missing in this game build", o, e.index, e.guid,
+                    table.concat(e.perks, " "))
+            end
+        end
+    end
+    io.export("perk-variants/pinned.txt", table.concat(out, "\n") .. "\n")
 end
 log("done")
