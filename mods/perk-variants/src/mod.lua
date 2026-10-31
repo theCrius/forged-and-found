@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.4.2 (test worlds only).
+-- Perk Variants prototype 0.5.0 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -74,12 +74,19 @@ local RANDOM_LOOT_VARIANTS = MAX_VARIANTS
 -- TEST switch: preset entries that always spawn drop the original AND a variant,
 -- so both can be compared side by side. false = normal behaviour (variant only).
 local PAIR_TEST = false
-local ROLL_ATTEMPTS = MAX_VARIANTS * 10 -- rolls tried per item to find distinct variants
-local MIN_CHOICES = 2                   -- a slot pool needs this many candidates before falling back to a wider one
-local MAX_SAME_PERK = 2                 -- the same perk at most twice on one item
-local FAMILY_CAP = { Skill = 3, Damage = 3, DamageAgainst = 1 } -- one "damage vs <creature>" per item
+local ROLL_ATTEMPTS = 12                -- rolls tried per variant (theme) to find an acceptable one
+local MAX_SAME_PERK = 2                 -- the same perk at most twice on one item (skills: once)
+-- Families (first word of the perk name, with a few merged); a theme needs up to
+-- 3 perks of one family (Crit, Max_Adder) and Enhance up to 5 skills.
+local FAMILY_CAP = { Skill = 5, Damage = 3, DamageAgainst = 1, Crit = 3, Max = 3 }
 local DEFAULT_FAMILY_CAP = 2
-local THEME_BIAS = 0.6                  -- chance that a slot is limited to the variant's theme (if the pool has any)
+-- Composition (developer's rules, 2026-10-31). Epic shows slots 1-4: 3 theme
+-- perks + 1 character skill (SKILL_SLOT); Enhance: 4 skills. Legendary adds
+-- slot 5, the capstone: always a character skill at +2.
+local SKILL_SLOT = 3
+local THEME_STRAY = 0.1                 -- chance a theme slot takes any perk of the item type instead (themes are not exclusive)
+local RESOURCE_BIAS = 0.7               -- Sustain/Empower prefer the class's resource
+local CLASS_RESOURCE = { Warrior = "Health", Ranger = "Stamina", Mage = "Mana" }
 local MIN_CHANGES = 2                   -- a variant differs from vanilla in >= 2 of the slots an epic shows (1-4)
 local MIN_DISTINCT = 2                  -- ... and from each sibling variant in >= 2 perks (as a multiset)
 -- Core skills about building, gathering and fishing never roll on equipment
@@ -89,7 +96,7 @@ local EXCLUDED_PERKS = {
     "^Perk_Skill_Level_Generic_Prospector", "^Perk_Skill_Level_Generic_Miner",
     "^Perk_Skill_Level_Generic_FishermansResolve",
 }
--- Elemental variants commit to one element; items named after an element
+-- Elemental variants focus on 1-2 elements; items named after an element
 -- (e.g. Weapon_T3_1H_Wand_01_Fire) keep their first perk. "Fog" is Shroud.
 local ELEMENTS = { "Fire", "Ice", "Lightning", "Poison", "Fog" }
 local NONE = game.guid.NONE
@@ -238,25 +245,33 @@ for _, t in ipairs(SIZE_TYPES) do sizes_before[t] = serialized_size(t) end
 ---------------------------------------------------------------------------
 
 local perk_names, perk_class, perk_family, perk_theme = {}, {}, {}, {}
+local perk_by_name = {}   -- debug name -> guid (finds the +1/+2 versions of a skill perk)
 local perk_line = {}      -- perk guid -> tier line (name without its tier token)
 local line_members = {}   -- tier line -> list of { guid, lo, hi }
 
+-- Theme of a perk (developer's themes, 2026-10-31): Sustain (leech/regen of
+-- health, mana, stamina), Empower (max health/mana/stamina), Elemental, Physical
+-- (maximum damage), Crit, Enhance (character skills). Everything else (armor,
+-- resistances, utility) is "Other" and only appears as an off-theme pick.
 local function theme_of(body)
-    if body:find("^Skill_Level") then return "Skill" end
+    if body:find("^Skill_Level") then return "Enhance" end
+    if body:find("Crit") then return "Crit" end
+    if body:find("^Max_Adder") then return "Empower" end
+    if body:find("^Leech") or body:find("^Recharge") or body:find("StaminaBuff") or body:find("StaminaGain")
+        or body:find("Mana_Cost") then return "Sustain" end
     if body:find("^Damage_Against") then return "Physical" end -- before elements: "Fogger" contains "Fog"
-    if body:find("^Armor") or body:find("^Max_Adder") or body:find("^Resistance") then return "Vitality" end
-    if body:find("Crit") then return "Precision" end
-    if body:find("^Leech") or body:find("^Recharge") or body:find("^OnKill") or body:find("Restore") then return "Sustain" end
-    for _, e in ipairs({ "Fire", "Ice", "Lightning", "Poison", "Fog", "Magical", "Shroud" }) do
-        if body:find(e) then return "Elemental" end
+    for _, e in ipairs(ELEMENTS) do
+        if body:find("^Damage_" .. e) or body:find("^DamageMod_" .. e) then return "Elemental" end
     end
-    if body:find("^Damage") or body:find("MercilessStrike") or body:find("Backstab") or body:find("SneakAttack") then return "Physical" end
-    return "Utility"
+    if body:find("^Damage_") or body:find("^DamageMod_") or body:find("Backstab") or body:find("MercilessStrike")
+        or body:find("SneakAttack") or body:find("InAirDamage") then return "Physical" end
+    return "Other"
 end
 
 for _, r in ipairs(game.assets.get_resources_by_type("keen::Perk")) do
     local name = text_of(r):match('"debugName":"([^"]*)"') or r.guid
     perk_names[r.guid] = name
+    perk_by_name[name] = r.guid
     perk_class[r.guid] = name:match("^Perk_Skill_Level_(%a+)_")
     local body = name:gsub("^Perk_", "")
     local family
@@ -349,6 +364,7 @@ local function pool_add(key, perk)
 end
 
 local eligible_count = 0
+local skill_bases = {}             -- class -> { skill base name -> a vanilla perk guid }
 for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
     local text = text_of(r)
     local id = tonumber(text:match('^{"itemId":{"value":(%d+)}'))
@@ -392,15 +408,15 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
         items[r.guid] = info
         item_order[#item_order + 1] = r.guid
         if info.eligible then eligible_count = eligible_count + 1 end
-        for slot, p in ipairs(special and {} or perks) do
-            if p ~= NONE then
-                -- Per-slot pools: vanilla puts higher-tier perks only in the slots
-                -- that unlock at higher levels. The group-wide pool is the fallback.
-                pool_add(info.group .. "#" .. slot, p)
-                pool_add(info.group, p)
-                -- Capstone pool: what vanilla puts in slot 5 of items that can be Legendary.
-                if slot == 5 and legendary then pool_add(info.group .. "#cap", p) end
+        for _, p in ipairs(special and {} or perks) do
+            if p ~= NONE and perk_class[p] and not excluded(p) then
+                -- Character skills seen on any vanilla item, per class (Generic = all).
+                local base = (perk_names[p] or ""):gsub("_%d+$", "")
+                skill_bases[perk_class[p]] = skill_bases[perk_class[p]] or {}
+                skill_bases[perk_class[p]][base] = p
             end
+            -- Pool of the item's wide group (theme perks are taken from here).
+            if p ~= NONE then pool_add(info.group, p) end
         end
     end
 end
@@ -409,139 +425,208 @@ log(string.format("%d registered items have perks, %d can drop as Epic or Legend
     #item_order, eligible_count))
 
 ---------------------------------------------------------------------------
--- Roll perks
---
--- Each variant first picks a class (skill perks only for the item's class or
--- Generic; class-neutral items pick one class per variant) and a theme
--- (archetype) offered by its group's pool. Slot k then draws from the first
--- pool with at least MIN_CHOICES allowed candidates: group#k, group. With
--- probability THEME_BIAS the candidates are narrowed to the theme, if any fit
--- (soft themes: pools never get too narrow). Every pick is swapped for the
--- member of its tier line that fits the item's tier. Slot 5 of items that can
--- be Legendary is the capstone: drawn from the group#cap pool, one tier up,
--- preferring strong perks (no damage vs one creature type, no utility).
--- Elemental variants commit to one element. Rings and element-named items keep
--- slot 1 (identity). Building/gathering/fishing skills never roll.
--- Same perk at most MAX_SAME_PERK times, a family at most its cap.
+-- Character skills per class: the +1 (normal slots) and +2 (capstone) perk of
+-- every skill seen on a vanilla item. Generic (core) combat skills fit all.
 ---------------------------------------------------------------------------
 
 local CLASSES = { "Mage", "Ranger", "Warrior" }
-local THEMES = { "Elemental", "Physical", "Precision", "Sustain", "Skill", "Vitality" }
-
-local function roll_perks(guid, info, attempt)
-    local next_int = rng(ROLL_SEED .. "|" .. guid .. "|roll" .. attempt)
-    local group_pool = pools[info.group]
-
-    local variant_class = info.class
-    if variant_class == nil or variant_class == "None" then
-        local offered = {}
-        for _, c in ipairs(CLASSES) do
-            for _, p in ipairs(group_pool.list) do
-                if perk_class[p] == c then offered[#offered + 1] = c; break end
+local skills = {}   -- class -> list of { base, one, two }, sorted (pairs() order is not deterministic)
+for _, c in ipairs(CLASSES) do
+    local list, seen = {}, {}
+    for _, source in ipairs({ c, "Generic" }) do
+        for base, p in pairs(skill_bases[source] or {}) do
+            if not seen[base] then
+                seen[base] = true
+                list[#list + 1] = { base = base, one = perk_by_name[base .. "_1"] or p, two = perk_by_name[base .. "_2"] }
             end
         end
-        variant_class = (#offered > 0) and offered[next_int(#offered)] or nil
     end
-    local function class_ok(p)
-        local c = perk_class[p]
-        return not c or c == "Generic" or c == variant_class
-    end
+    table.sort(list, function(a, b) return a.base < b.base end)
+    skills[c] = list
+    local twos = 0
+    for _, s in ipairs(list) do if s.two then twos = twos + 1 end end
+    log(string.format("%s skills (incl. Generic): %d, %d with a +2 perk for capstones", c, #list, twos))
+end
 
-    local themes = {}
+-- Melee / ranged / caster: which class's skills (and resource) an item gets.
+local GROUP_CLASS = {
+    Melee_1H = "Warrior", Melee_2H = "Warrior", Shield = "Warrior", Bow = "Ranger", Daggers = "Ranger",
+    Staff = "Mage", Wand = "Mage", Armor_Warrior = "Warrior", Armor_Ranger = "Ranger", Armor_Mage = "Mage",
+}
+local function known_class(info)
+    local c = GROUP_CLASS[info.group]
+    if not c and info.group == "Ammo" then
+        if info.name:find("Arrow") then c = "Ranger" elseif info.name:find("Spell") then c = "Mage" end
+    end
+    if not c and (info.class == "Warrior" or info.class == "Ranger" or info.class == "Mage") then c = info.class end
+    return c
+end
+
+---------------------------------------------------------------------------
+-- Roll perks
+--
+-- Each variant has one theme (developer's themes): Sustain, Empower,
+-- Elemental (1-2 elements), Physical, Crit, Enhance. The 6 variants of an item
+-- spread over the themes its pool supports (deterministic shuffle). Slots:
+--   - slot 1 of rings and element-named items keeps the vanilla perk (identity);
+--   - slot 5 of Legendary-capable items is the capstone: a character skill at +2
+--     (+1 if the skill has no +2 perk);
+--   - Enhance: every other slot is a character skill (+1);
+--   - other themes: SKILL_SLOT is a character skill, the rest theme perks, each
+--     with THEME_STRAY chance of any non-skill perk of the item type;
+--   - Sustain/Empower prefer the class's resource (RESOURCE_BIAS).
+-- Theme perks come from the item's wide group pool, swapped for the member of
+-- their tier line that fits the item's tier. Skills only from the item's class
+-- (melee weapons/shields Warrior, bows/daggers Ranger, staffs/wands Mage,
+-- armor by class) or Generic; a skill appears once per item.
+---------------------------------------------------------------------------
+
+local THEMES = { "Sustain", "Empower", "Elemental", "Physical", "Crit", "Enhance" }
+
+local function element_of(p)
+    if perk_theme[p] ~= "Elemental" then return nil end
+    local name = perk_names[p] or ""
+    for _, e in ipairs(ELEMENTS) do if name:find(e) then return e end end
+    return nil
+end
+
+-- Perks of one theme in the item's group pool, at the given tier.
+local function theme_lines(info, theme, tier)
+    local out = {}
+    for _, p in ipairs(pools[info.group].list) do
+        if perk_theme[p] == theme then
+            local q = at_tier(p, tier)
+            if q then out[#out + 1] = q end
+        end
+    end
+    return out
+end
+
+-- Themes an item can carry (>= 2 perk lines in its pool; Enhance: >= 4 skills),
+-- shuffled deterministically so its variants spread over different themes.
+local function themes_for(guid, info)
+    local list = {}
     for _, t in ipairs(THEMES) do
-        for _, p in ipairs(group_pool.list) do
-            if perk_theme[p] == t and class_ok(p) then themes[#themes + 1] = t; break end
+        local ok
+        if t == "Enhance" then
+            local c = known_class(info)
+            ok = not c or #skills[c] >= 4
+        else
+            ok = #theme_lines(info, t, info.tier) >= 2
         end
+        if ok then list[#list + 1] = t end
     end
-    local theme = (#themes > 0) and themes[next_int(#themes)] or nil
+    local next_int = rng(ROLL_SEED .. "|" .. guid .. "|themes")
+    for i = #list, 2, -1 do
+        local j = next_int(i)
+        list[i], list[j] = list[j], list[i]
+    end
+    return list
+end
 
-    -- An elemental variant commits to one element offered by the pool; perks of
-    -- other elements are then not allowed at all (no Ice + Fire + Shroud mixes).
-    local function element_of(p)
-        if perk_theme[p] ~= "Elemental" then return nil end
-        local name = perk_names[p] or ""
-        for _, e in ipairs(ELEMENTS) do if name:find(e) then return e end end
-        return nil
-    end
-    local element
+local function skill_base(p) return ((perk_names[p] or ""):gsub("_%d+$", "")) end
+
+local function roll_perks(guid, info, theme, attempt)
+    local next_int = rng(ROLL_SEED .. "|" .. guid .. "|" .. theme .. "|" .. attempt)
+    local class = known_class(info) or CLASSES[next_int(#CLASSES)]
+    local resource = CLASS_RESOURCE[class]
+
+    local elements
     if theme == "Elemental" then
-        local offered = {}
-        for _, e in ipairs(ELEMENTS) do
-            for _, p in ipairs(group_pool.list) do
-                if element_of(p) == e then offered[#offered + 1] = e; break end
+        local offered, seen = {}, {}
+        for _, q in ipairs(theme_lines(info, theme, info.tier)) do
+            local e = element_of(q)
+            if e and not seen[e] then seen[e] = true; offered[#offered + 1] = e end
+        end
+        table.sort(offered)
+        elements = {}
+        if #offered > 0 then
+            local first = next_int(#offered)
+            elements[offered[first]] = true
+            if #offered > 1 and next_int(2) == 2 then
+                local second = next_int(#offered - 1)
+                if second >= first then second = second + 1 end
+                elements[offered[second]] = true
             end
         end
-        element = (#offered > 0) and offered[next_int(#offered)] or nil
-    end
-    local function in_theme(q)
-        return perk_theme[q] == theme and (not element or element_of(q) == element)
     end
 
-    -- Capstones should feel like the reward for a legendary: no damage against a
-    -- single creature type, no utility perks, no durability restore.
-    local function strong(q)
-        if perk_family[q] == "DamageAgainst" or perk_theme[q] == "Utility" then return false end
-        return not (perk_names[q] or ""):find("Restore_Durability")
-    end
-
-    local same, family = {}, {}
+    local same, family, bases = {}, {}, {}
     local function allowed(p)
-        if not class_ok(p) then return false end
-        if element then
+        local c = perk_class[p]
+        if c then
+            if c ~= "Generic" and c ~= class then return false end
+            if bases[skill_base(p)] then return false end
+        end
+        if elements then
             local e = element_of(p)
-            if e and e ~= element then return false end
+            if e and not elements[e] then return false end
         end
         if (same[p] or 0) >= MAX_SAME_PERK then return false end
         local f = perk_family[p]
         if (family[f] or 0) >= (FAMILY_CAP[f] or DEFAULT_FAMILY_CAP) then return false end
         return true
     end
+    local function pick(list, prefer_resource)
+        local ok = {}
+        for _, q in ipairs(list) do if allowed(q) then ok[#ok + 1] = q end end
+        if #ok == 0 then return nil end
+        if prefer_resource and resource and next_int(1000) <= RESOURCE_BIAS * 1000 then
+            local res = {}
+            for _, q in ipairs(ok) do if (perk_names[q] or ""):find(resource) then res[#res + 1] = q end end
+            if #res > 0 then ok = res end
+        end
+        return ok[next_int(#ok)]
+    end
+    local function skill_list(two)
+        local out = {}
+        for _, s in ipairs(skills[class] or {}) do
+            local q = two and s.two or s.one
+            if q then out[#out + 1] = q end
+        end
+        return out
+    end
+    local function any_list()   -- off-theme: any non-skill perk of the item type
+        local out = {}
+        for _, p in ipairs(pools[info.group].list) do
+            if not perk_class[p] then
+                local q = at_tier(p, info.tier)
+                if q then out[#out + 1] = q end
+            end
+        end
+        return out
+    end
 
     local result = {}
     for slot, vanilla in ipairs(info.perks) do
-        local pick = vanilla
-        if vanilla ~= NONE and not (slot == 1 and info.anchor) then
-            local capstone = slot == 5 and info.legendary
-            local tier = info.tier and (capstone and info.tier + 1 or info.tier)
-            local keys = capstone and { info.group .. "#cap", info.group .. "#5", info.group }
-                or { info.group .. "#" .. slot, info.group }
-            local candidates
-            for _, key in ipairs(keys) do
-                local pool = pools[key]
-                if pool then
-                    local list = {}
-                    for _, p in ipairs(pool.list) do
-                        local q = at_tier(p, tier)
-                        if q and allowed(q) then list[#list + 1] = q end
-                    end
-                    if capstone then
-                        local good = {}
-                        for _, q in ipairs(list) do if strong(q) then good[#good + 1] = q end end
-                        if #good > 0 then list = good end
-                    end
-                    if #list >= MIN_CHOICES then candidates = list; break end
-                    if #list > 0 and not candidates then candidates = list end
-                end
+        local q
+        if vanilla == NONE then
+            q = NONE
+        elseif slot == 1 and info.anchor then
+            q = vanilla
+        else
+            if slot == 5 and info.legendary then
+                q = pick(skill_list(true)) or pick(skill_list(false))
+            elseif theme == "Enhance" or slot == SKILL_SLOT then
+                q = pick(skill_list(false))
+            elseif next_int(1000) <= THEME_STRAY * 1000 then
+                q = pick(any_list())
             end
-            if candidates then
-                if theme and next_int(1000) <= THEME_BIAS * 1000 then
-                    local themed = {}
-                    for _, q in ipairs(candidates) do if in_theme(q) then themed[#themed + 1] = q end end
-                    if #themed > 0 then candidates = themed end
-                end
-                pick = candidates[next_int(#candidates)]
+            if not q and theme ~= "Enhance" then
+                q = pick(theme_lines(info, theme, info.tier), theme == "Sustain" or theme == "Empower")
             end
+            q = q or pick(any_list()) or vanilla
         end
-        result[slot] = pick
-        if pick ~= NONE then
-            same[pick] = (same[pick] or 0) + 1
-            local f = perk_family[pick]
+        result[slot] = q
+        if q ~= NONE then
+            same[q] = (same[q] or 0) + 1
+            local f = perk_family[q]
             family[f] = (family[f] or 0) + 1
+            if perk_class[q] then bases[skill_base(q)] = true end
         end
     end
-    return result, theme
+    return result
 end
-
 -- Acceptance: a variant must be visibly different from vanilla (>= MIN_CHANGES
 -- of the slots an epic shows) and not a reshuffle of vanilla or a sibling
 -- (>= MIN_DISTINCT perks not matched in the other's multiset).
@@ -701,18 +786,26 @@ for _, original in ipairs(item_order) do
 
     -- New rolls only for items that can drop as Epic/Legendary (pinned variants of
     -- other items are still rebuilt above, so saves keep them).
-    for attempt = 1, info.eligible and ROLL_ATTEMPTS or 0 do
+    -- Variant k takes the k-th of the item's themes (shuffled per item), so the 6
+    -- variants spread over different themes; a theme that yields no acceptable
+    -- roll is skipped for the next one.
+    local themes = info.eligible and themes_for(original, info) or {}
+    for k = 1, #themes > 0 and MAX_VARIANTS * 2 or 0 do
         if #list >= MAX_VARIANTS then break end
-        local perks, theme = roll_perks(original, info, attempt)
-        local signature = table.concat(perks, ",")
-        if not seen[signature] and acceptable(perks, info, list) then
-            seen[signature] = true
-            local index = #list + 1
-            local v = create_variant(original, info, source, index, perks)
-            v.theme = theme
-            list[index] = v
-            variants[#variants + 1] = v
-            stats.rolled = stats.rolled + 1
+        local theme = themes[(k - 1) % #themes + 1]
+        for attempt = 1, ROLL_ATTEMPTS do
+            local perks = roll_perks(original, info, theme, k * 100 + attempt)
+            local signature = table.concat(perks, ",")
+            if not seen[signature] and acceptable(perks, info, list) then
+                seen[signature] = true
+                local index = #list + 1
+                local v = create_variant(original, info, source, index, perks)
+                v.theme = theme
+                list[index] = v
+                variants[#variants + 1] = v
+                stats.rolled = stats.rolled + 1
+                break
+            end
         end
     end
     variants_of[original] = list
