@@ -1,11 +1,13 @@
--- Perk Variants prototype 0.2.4 (test worlds only).
+-- Perk Variants prototype 0.2.7 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks this creates up
 -- to MAX_VARIANTS variants (clones with rerolled perks) and registers each one
 -- everywhere the game looks items up by ItemId or GUID:
---   - ItemInfo clone whose iconImage points at the original's pre-rendered
---     UiTextureResource (no texture per variant: the UI texture loader has a
---     fixed number of slots)
+--   - ItemInfo clone
+--   - UiTextureResource clone of the original's pre-rendered icon under the
+--     variant's GUID (container slots look icons up by the item's own GUID and
+--     ignore ItemInfo.iconImage, 0.2.6). The UI texture loader has a fixed
+--     number of slots, which caps the total number of variants.
 --   - ItemRegistryResource (itemRefs + dbgNames) and LootableItemsResource.items
 --     (parallel arrays, appended at the same index)
 --   - ItemKnowledgeResource (StaticHashMap ItemId -> ItemKnowledge)
@@ -24,8 +26,8 @@
 --     vanilla. Verify (reverse engineer the loot picker) before release.
 --   - Preset inventories (fixed chests etc.): in selector groups a perk-item
 --     stack becomes one stack per variant, weight divided by the count; in
---     plain groups it becomes a child selector group holding one stack per
---     variant.
+--     plain groups the stack is retargeted to one variant, picked in turn
+--     (a child selector group gave nothing on pickup in 0.2.6).
 -- Not covered: enemy-carried weapons (enemy setup references the item directly).
 --
 -- Determinism: variant GUIDs and perk rolls derive only from the original GUID,
@@ -55,13 +57,14 @@ if not loader.features.patch then
 end
 
 local SEED = "perk-variants/v0"
--- 8 variants/item crash the game at startup (a ~4 MiB buffer overflows during zstd
--- decompression, 0.2.2-0.2.5); the cause is unidentified and does not depend on the
--- loot pool size. 4 is the largest count whose startup got past that point (0.2.3).
-local MAX_VARIANTS = 4
+-- Each variant needs its own icon texture, and the UI texture loader seems to hold
+-- ~8192 (inferred from the 0.2.3 dump) of which vanilla uses ~4888: about 3300
+-- variants, so 2 per item (~2460). 4 per item ran out of textures (0.2.3); 8 also
+-- overflowed a ~4 MiB buffer during zstd decompression (0.2.2-0.2.5, cause unknown).
+local MAX_VARIANTS = 2
 -- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
 -- the rest drop from presets only.
-local RANDOM_LOOT_VARIANTS = 4
+local RANDOM_LOOT_VARIANTS = 2
 local ROLL_ATTEMPTS = MAX_VARIANTS * 4 -- rolls tried per item to find distinct variants
 local MIN_CHOICES = 2                  -- a slot pool needs this many candidates before falling back to a wider one
 local MAX_SAME_PERK = 2                -- the same perk at most twice on one item
@@ -380,12 +383,10 @@ for _, original in ipairs(item_order) do
             data.itemId.value = id
             data.objectId = guid
             data.debugName = name
-            -- Icon: point iconImage at the original's pre-rendered UiTextureResource
-            -- (stored under the original item's GUID). 50 vanilla items already use
-            -- iconImage with iconModel/iconScene still set. Cloning the texture per
-            -- variant instead exhausts the UI texture loader's fixed slots
-            -- ("out of game ui textures" at ~4 variants per item).
-            data.iconImage = original
+            -- Icon: clone the original's pre-rendered texture under the variant's GUID.
+            -- Pointing iconImage at the original is not enough: container slots look
+            -- the texture up by the item's own GUID ("corrupted game ui texture", 0.2.6).
+            game.assets.create_resource(icon.data, "keen::UiTextureResource", guid, 0)
             for slot, p in ipairs(perks) do
                 if p ~= NONE and p ~= info.perks[slot] then
                     data.perkReferences[slot] = p
@@ -516,22 +517,14 @@ do
                     retarget(group.stacks[i], list[1], weight)
                     in_selectors = in_selectors + 1
                 else
-                    -- Every entry spawns: replace the stack by a selector holding its variants.
-                    -- Plain groups may not use weights (could be 0); give the variants equal positive ones.
-                    -- The stacks are passed inside the new group's table (each element is the
-                    -- original stack's view, cloned separately by the loader) because arrays
-                    -- created from Lua tables reject table.insert: the loader validates the
-                    -- inserted element against the array type instead of the element type.
-                    local stacks = {}
-                    for k = 1, n do stacks[k] = group.stacks[i] end
-                    table.insert(group.groups, {
-                        isSelector = true, stacks = stacks, groups = {},
-                        lootLabels = { labels = {}, childGroups = {} },
-                    })
-                    local selector = group.groups[#group.groups]
-                    for k = 1, n do retarget(selector.stacks[k], list[k], 1) end
-                    table.remove(group.stacks, i)
+                    -- Every entry spawns: retarget the stack to one variant, taking the
+                    -- variants in turn across all plain stacks (deterministic for a given
+                    -- game build). 0.2.0-0.2.6 replaced the stack by a child selector group
+                    -- with one stack per variant; the ground sword in the starting area then
+                    -- gave nothing on pickup (0.2.6). A direct retarget worked in 0.1.5.
                     in_plain = in_plain + 1
+                    local stack = group.stacks[i]
+                    retarget(stack, list[(in_plain - 1) % n + 1], stack.weight)
                 end
                 count = count + 1
             end
@@ -547,7 +540,7 @@ do
         end
         if relevant and walk(r.data.rootGroup) > 0 then touched = touched + 1 end
     end
-    log(string.format("presets: %d inventories; %d stacks split in selector groups, %d stacks turned into variant selectors",
+    log(string.format("presets: %d inventories; %d stacks split in selector groups, %d plain stacks retargeted",
         touched, in_selectors, in_plain))
 end
 
@@ -676,9 +669,9 @@ for _, original in ipairs(item_order) do
     end
 end
 for _, v in ipairs(variants) do
-    -- Variants show the original's pre-rendered icon via iconImage.
-    if not game.assets.get_resource(v.original, "keen::UiTextureResource", 0) then
-        error("perk-variants: original of " .. v.name .. " has no icon texture")
+    -- Every variant needs its own icon texture (looked up by the variant's GUID).
+    if not game.assets.get_resource(v.guid, "keen::UiTextureResource", 0) then
+        error("perk-variants: variant " .. v.name .. " has no icon texture")
     end
 end
 
