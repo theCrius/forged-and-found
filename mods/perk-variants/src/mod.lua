@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.5.2 (test worlds only).
+-- Perk Variants prototype 0.5.3 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -399,12 +399,9 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
             tier = tonumber(name:match("_T(%d+)")), gen = gen, disabled = disabled,
             legendary = legendary, eligible = (epic or legendary) and not special,
         }
-        -- Identity anchor: rings (Ring of Health, of Mana, ...) and items named after
-        -- an element keep their first perk; a Ring of Health without Health is wrong.
-        info.anchor = info.group == "Ring"
-        for _, e in ipairs(ELEMENTS) do
-            if name:find("_" .. e .. "_") or name:find("_" .. e .. "$") then info.anchor = true end
-        end
+        -- No identity anchor (0.4.2-0.5.2 kept slot 1 on rings and element-named
+        -- items): an item's base stats already carry its identity, so a Ring of
+        -- Health whose upgrades go for crit fits a damage-focused warrior (developer).
         items[r.guid] = info
         item_order[#item_order + 1] = r.guid
         if info.eligible then eligible_count = eligible_count + 1 end
@@ -468,7 +465,6 @@ end
 -- Each variant has one theme (developer's themes): Sustain, Empower,
 -- Elemental (1-2 elements), Physical, Crit, Enhance. The 6 variants of an item
 -- spread over the themes its pool supports (deterministic shuffle). Slots:
---   - slot 1 of rings and element-named items keeps the vanilla perk (identity);
 --   - slot 5 of Legendary-capable items is the capstone: a character skill at +2
 --     (+1 if the skill has no +2 perk);
 --   - Enhance: every other slot is a character skill (+1);
@@ -615,8 +611,6 @@ local function roll_perks(guid, info, theme, attempt, hybrid)
         local q
         if vanilla == NONE then
             q = NONE
-        elseif slot == 1 and info.anchor then
-            q = vanilla
         else
             -- Skill class of this slot: the second class for hybrids' skill slot and
             -- capstone, and for every even slot of a hybrid Enhance variant.
