@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.5.1 (test worlds only).
+-- Perk Variants prototype 0.5.2 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -591,7 +591,10 @@ local function roll_perks(guid, info, theme, attempt, hybrid)
     local function skill_list(two, of_class)
         local out = {}
         for _, s in ipairs(skills[of_class or class] or {}) do
-            local q = two and s.two or s.one
+            -- Not `two and s.two or s.one`: that falls back to the +1 perk of skills
+            -- without a +2 version (0.5.1 bug: only 37% of capstones were +2).
+            local q
+            if two then q = s.two else q = s.one end
             if q then out[#out + 1] = q end
         end
         return out
