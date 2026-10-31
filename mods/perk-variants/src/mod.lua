@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.0 (test worlds only).
+-- Perk Variants prototype 0.6.1 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -394,10 +394,15 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
         -- "_TX_" items (Hollow Halls: Blunt + vs Skeleton on every weapon type, even
         -- bows; Fog Nest: Shroud) and NPC-only gear. Normal "T1-TX" enemy drops stay.
         local special = name:find("_TX_") or name:find("NPC_ONLY")
+        -- Lore items stay as designed (developer: "there is a reason they are as
+        -- they are"), and craftable copies ("Craft_") never get variants: crafting
+        -- always yields the vanilla item, so their variants could never appear.
+        -- Both still feed the pools (they are normal perks of their item type).
+        local fixed_design = name:find("_Lore_") or name:find("^Craft_")
         local info = {
             name = name, perks = perks, group = wide_group(name, class), class = class, id = id,
             tier = tonumber(name:match("_T(%d+)")), gen = gen, disabled = disabled,
-            legendary = legendary, eligible = (epic or legendary) and not special,
+            legendary = legendary, eligible = (epic or legendary) and not special and not fixed_design,
         }
         -- No identity anchor (0.4.2-0.5.2 kept slot 1 on rings and element-named
         -- items): an item's base stats already carry its identity, so a Ring of
@@ -844,6 +849,36 @@ do
         log(string.format("WARNING: %d pinned items no longer exist or have no perks; their variants cannot be rebuilt and are lost from saves: %s",
             #lost, table.concat(lost, ", ")))
     end
+end
+
+---------------------------------------------------------------------------
+-- Crafted lore items at Legendary (developer, 2026-10-31)
+--
+-- Once a lore item is found, its artisan crafts copies ("Craft_..._Lore_...",
+-- one per tier, all with 5 perks) at a fixed Rare rarity, which shows 3 perks.
+-- The mod makes them Legendary (all 5 perks). This is the mod's only edit of
+-- vanilla items: the item keeps its ItemId, and the game recomputes how many
+-- perk rows an item shows from its type's rarity on every load (rebalance pass
+-- at enshrouded.exe+0x404A0C), so removing the mod should turn them back to Rare
+-- (inferred, to be tested).
+---------------------------------------------------------------------------
+
+local CRAFTED_LORE_RARITY = "Legendary"
+do
+    local changed = 0
+    for _, original in ipairs(item_order) do
+        if items[original].name:find("^Craft_") and items[original].name:find("_Lore_") then
+            local resource = game.assets.get_resource(original, "keen::ItemInfo")
+            local text = text_of(resource)
+            if text:match('"rarity":"(%a+)"') ~= CRAFTED_LORE_RARITY or text:match('"generateRarity":(%a+)') ~= "false" then
+                local data = resource.data
+                data.generateRarity = false -- a few copies roll their rarity (data quirk)
+                data.rarity = CRAFTED_LORE_RARITY
+                changed = changed + 1
+            end
+        end
+    end
+    log(string.format("crafted lore items: %d set to %s", changed, CRAFTED_LORE_RARITY))
 end
 
 ---------------------------------------------------------------------------
