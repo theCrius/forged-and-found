@@ -55,10 +55,12 @@ if not loader.features.patch then
 end
 
 local SEED = "perk-variants/v0"
-local MAX_VARIANTS = 8
+-- 8 variants/item crash the game at startup (a ~4 MiB buffer overflows during zstd
+-- decompression, 0.2.2-0.2.5); the cause is unidentified and does not depend on the
+-- loot pool size. 4 is the largest count whose startup got past that point (0.2.3).
+local MAX_VARIANTS = 4
 -- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
--- the rest drop from presets only. 8 labeled variants made the loot pool ~4 MB and
--- the game overflowed a ~4 MiB buffer while decompressing at startup (0.2.4).
+-- the rest drop from presets only.
 local RANDOM_LOOT_VARIANTS = 4
 local ROLL_ATTEMPTS = MAX_VARIANTS * 4 -- rolls tried per item to find distinct variants
 local MIN_CHOICES = 2                  -- a slot pool needs this many candidates before falling back to a wider one
