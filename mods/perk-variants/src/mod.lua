@@ -1,8 +1,10 @@
--- Perk Variants prototype 0.3.1 (test worlds only).
+-- Perk Variants prototype 0.4.0 (test worlds only).
 --
--- Vanilla items are never changed. For every item with perks this creates up
--- to MAX_VARIANTS variants (clones with rerolled perks) and registers each one
--- everywhere the game looks items up by ItemId or GUID:
+-- Vanilla items are never changed. For every item with perks that can drop as
+-- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
+-- rerolled perks, see "Roll perks" for the rules) that exist only as Epic or
+-- Legendary, and registers each one everywhere the game looks items up by
+-- ItemId or GUID:
 --   - ItemInfo clone that keeps the original's objectId. The item icon renderer
 --     ("doItemRenderFrame", enshrouded.exe+0xBEFAE0 -> +0xCF5260) loads the
 --     UiTextureResource named by ItemInfo.objectId (+4), so variants show the
@@ -15,20 +17,22 @@
 --   - GameKnowledgeResource world/player knowledge maps (an item's ItemId is
 --     also its KnowledgeId)
 --
--- Loot rule (test behaviour): wherever loot data names a vanilla perk item, it
--- drops as one of its variants instead, with the item family keeping its
--- vanilla share:
+-- Loot rule:
 --   - Random loot: each variant's loot entry carries the original's labels with
---     the top labeled level's weights divided by the variant count; the
---     original's entry gets empty labelGroups (a state vanilla already uses for
---     items that never drop randomly).
+--     the top labeled level's weights divided by the variant count. Items whose
+--     rarity is rolled at drop: variant entries allow only Epic/Legendary and
+--     the original keeps Common/Uncommon/Rare (both UNVERIFIED, see the loot
+--     pool section). Items with a fixed Epic/Legendary rarity drop only as
+--     variants (original's entry gets empty labelGroups, a state vanilla uses
+--     for items that never drop randomly).
 --     UNVERIFIED ASSUMPTION: label weights multiply along a branch of the label
 --     tree. If they add up instead, variants drop somewhat more often than
 --     vanilla. Verify (reverse engineer the loot picker) before release.
---   - Preset inventories (fixed chests etc.): in selector groups a perk-item
---     stack becomes one stack per variant, weight divided by the count; in
---     plain groups the stack is retargeted to one variant, picked in turn
---     (a child selector group gave nothing on pickup in 0.2.6).
+--   - Preset inventories (fixed chests etc.), fixed-rarity items only: in
+--     selector groups a perk-item stack becomes one stack per variant, weight
+--     divided by the count; in plain groups the stack is retargeted to one
+--     variant, picked in turn (a child selector group gave nothing on pickup in
+--     0.2.6). Rolled-rarity items stay vanilla there (no rarity field in presets).
 -- Not covered: enemy-carried weapons (enemy setup references the item directly).
 --
 -- Determinism: variant GUIDs derive only from the original GUID, the variant
@@ -58,22 +62,26 @@ if not loader.features.patch then
     return
 end
 
-local SEED = "perk-variants/v0"
--- Without textures per variant, 4 per item starts fine (0.2.6); 8 per item
--- overflows a ~4 MiB buffer during zstd decompression at startup (0.2.2-0.2.5,
--- cause unknown).
-local MAX_VARIANTS = 4
+local SEED = "perk-variants/v0"          -- variant GUIDs (never change: saves store them)
+local ROLL_SEED = "perk-variants/rolls-v1" -- rolls of items not in the pinned list
+-- Only items that can drop as Epic or Legendary get variants (~745). Total
+-- variants must stay within what is known to start: 4795 worked (0.2.6/0.2.9);
+-- 9579 overflowed a ~4 MiB buffer during zstd decompression (cause unknown).
+local MAX_VARIANTS = 6
 -- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
 -- the rest drop from presets only.
-local RANDOM_LOOT_VARIANTS = 4
+local RANDOM_LOOT_VARIANTS = MAX_VARIANTS
 -- TEST switch: preset entries that always spawn drop the original AND a variant,
 -- so both can be compared side by side. false = normal behaviour (variant only).
 local PAIR_TEST = false
-local ROLL_ATTEMPTS = MAX_VARIANTS * 4 -- rolls tried per item to find distinct variants
-local MIN_CHOICES = 2                  -- a slot pool needs this many candidates before falling back to a wider one
-local MAX_SAME_PERK = 2                -- the same perk at most twice on one item
+local ROLL_ATTEMPTS = MAX_VARIANTS * 10 -- rolls tried per item to find distinct variants
+local MIN_CHOICES = 2                   -- a slot pool needs this many candidates before falling back to a wider one
+local MAX_SAME_PERK = 2                 -- the same perk at most twice on one item
 local FAMILY_CAP = { Skill = 3, Damage = 3 }
 local DEFAULT_FAMILY_CAP = 2
+local THEME_BIAS = 0.6                  -- chance that a slot is limited to the variant's theme (if the pool has any)
+local MIN_CHANGES = 2                   -- a variant differs from vanilla in >= 2 of the slots an epic shows (1-4)
+local MIN_DISTINCT = 2                  -- ... and from each sibling variant in >= 2 perks (as a multiset)
 local NONE = game.guid.NONE
 local u32 = integer.u32
 
@@ -212,7 +220,29 @@ end
 local sizes_before = {}
 for _, t in ipairs(SIZE_TYPES) do sizes_before[t] = serialized_size(t) end
 
-local perk_names, perk_class, perk_family = {}, {}, {}
+---------------------------------------------------------------------------
+-- Perks: class, family (caps), theme (soft archetypes) and tier line.
+-- A tier line groups perks that differ only in their _T<n> / _T<n>_T<m> token
+-- (Perk_Max_Adder_Stamina_T1 ... _T7, Perk_Increase_Crit_Chance_T1_T2 ...), so
+-- a perk taken from any tier can be swapped for the member matching the item.
+---------------------------------------------------------------------------
+
+local perk_names, perk_class, perk_family, perk_theme = {}, {}, {}, {}
+local perk_line = {}      -- perk guid -> tier line (name without its tier token)
+local line_members = {}   -- tier line -> list of { guid, lo, hi }
+
+local function theme_of(body)
+    if body:find("^Skill_Level") then return "Skill" end
+    if body:find("^Armor") or body:find("^Max_Adder") or body:find("^Resistance") then return "Vitality" end
+    if body:find("Crit") then return "Precision" end
+    if body:find("^Leech") or body:find("^Recharge") or body:find("^OnKill") or body:find("Restore") then return "Sustain" end
+    for _, e in ipairs({ "Fire", "Ice", "Lightning", "Poison", "Fog", "Magical", "Shroud" }) do
+        if body:find(e) then return "Elemental" end
+    end
+    if body:find("^Damage") or body:find("MercilessStrike") or body:find("Backstab") or body:find("SneakAttack") then return "Physical" end
+    return "Utility"
+end
+
 for _, r in ipairs(game.assets.get_resources_by_type("keen::Perk")) do
     local name = text_of(r):match('"debugName":"([^"]*)"') or r.guid
     perk_names[r.guid] = name
@@ -225,6 +255,35 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::Perk")) do
     elseif body:find("^DamageMod") then family = "Damage"
     else family = body:match("^(%a+)") or body end
     perk_family[r.guid] = family
+    perk_theme[r.guid] = theme_of(body)
+    local lo, hi = name:match("_T(%d+)_T(%d+)")
+    local line
+    if lo then
+        line = name:gsub("_T%d+_T%d+", "", 1)
+    else
+        lo = name:match("_T(%d+)")
+        hi = lo
+        if lo then line = name:gsub("_T%d+", "", 1) end
+    end
+    if line then
+        perk_line[r.guid] = line
+        line_members[line] = line_members[line] or {}
+        table.insert(line_members[line], { guid = r.guid, lo = tonumber(lo), hi = tonumber(hi) })
+    end
+end
+
+-- The member of p's tier line that fits an item of the given tier: the one
+-- whose range covers it, else the highest below it, else the lowest.
+local function at_tier(p, tier)
+    local line = perk_line[p]
+    if not line or not tier then return p end
+    local best, best_lo, low, low_lo
+    for _, m in ipairs(line_members[line]) do
+        if m.lo <= tier and tier <= m.hi then return m.guid end
+        if m.lo <= tier and (not best_lo or m.lo > best_lo) then best, best_lo = m.guid, m.lo end
+        if not low_lo or m.lo < low_lo then low, low_lo = m.guid, m.lo end
+    end
+    return best or low
 end
 
 local registered = {}
@@ -233,34 +292,42 @@ do
     for g in refs:gmatch('"([%x%-]+)"') do registered[g] = true end
 end
 
--- Pool keys from an item debugName. Fine key groups items that share perks
--- (weapon/ammo type, armor slot + class); coarse key is kind + tier.
-local function pool_keys(debug_name, class)
-    local name = debug_name:gsub("^Craft_", "")
-    local kind, tier, rest = name:match("^(%a+)_(T%d+)[%-%w]*_(.*)$")
-    if not kind then return nil, nil end
-    local coarse = kind .. "_" .. tier
-    local fine = coarse
-    if kind == "Armor" then
-        fine = coarse .. "_" .. (name:match("_(%a+)$") or "") .. "_" .. (class or "")
-    elseif kind == "Weapon" or kind == "Ammo" then
-        local a, b = rest:match("^(%w+)_(%a+)")
-        fine = coarse .. "_" .. (a or rest) .. "_" .. ((b or ""):gsub("Epic$", ""))
+-- Wide pool groups, so variants are more than reshuffles of one item type's
+-- perks: one-/two-handed melee, bows, staffs, wands, daggers, shields, rings,
+-- ammo, and armor by class across all slots.
+local function wide_group(debug_name, class)
+    local n = debug_name:gsub("^Craft_", "")
+    if n:find("^Ring_") then return "Ring" end
+    if n:find("^Shield_") then return "Shield" end
+    if n:find("^Ammo_") then return "Ammo" end
+    if n:find("^Armor_") then
+        local c = n:match("_(Mage)_") or n:match("_(Ranger)_") or n:match("_(Warrior)_")
+        if not c and class and class ~= "None" then c = class end
+        return "Armor_" .. (c or "Other")
     end
-    return fine, coarse
+    if n:find("^Weapon_") then
+        if n:find("Dagger") then return "Daggers" end
+        if n:find("Bow") then return "Bow" end
+        if n:find("Staff") then return "Staff" end
+        if n:find("Wand") then return "Wand" end
+        if n:find("_1H_") then return "Melee_1H" end
+        if n:find("_2H_") then return "Melee_2H" end
+    end
+    return n:match("^(%a+)_") or "Other"
 end
 
-local items, item_order = {}, {}  -- guid -> { name, perks, fine, coarse, class, id }
+local items, item_order = {}, {}  -- guid -> { name, perks, group, class, id, tier, gen, legendary, eligible }
 local used_ids = {}                -- ItemId -> true, to detect collisions
-local pools = {}                   -- key -> { list, seen }
+local pools = {}                   -- key -> { list, seen }; one entry per tier line
 
 local function pool_add(key, perk)
-    if not key then return end
     local p = pools[key]
     if not p then p = { list = {}, seen = {} }; pools[key] = p end
-    if not p.seen[perk] then p.seen[perk] = true; p.list[#p.list + 1] = perk end
+    local k = perk_line[perk] or perk
+    if not p.seen[k] then p.seen[k] = true; p.list[#p.list + 1] = perk end
 end
 
+local eligible_count = 0
 for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
     local text = text_of(r)
     local id = tonumber(text:match('^{"itemId":{"value":(%d+)}'))
@@ -274,54 +341,89 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
     if has and registered[r.guid] then
         local name = text:match('"debugName":"([^"]*)"}$') or r.guid
         local class = text:match('"itemClassAlignment":"(%a+)"')
-        local fine, coarse = pool_keys(name, class)
-        items[r.guid] = { name = name, perks = perks, fine = fine, coarse = coarse, class = class, id = id }
+        -- Rarity: fixed (generateRarity false) or rolled at drop minus disabled ones.
+        local gen = text:match('"generateRarity":(%a+)') == "true"
+        local rarity = text:match('"rarity":"(%a+)"')
+        local disabled = text:match('"disableRarityGeneration":%[(.-)%]') or ""
+        local epic, legendary
+        if gen then
+            epic = not disabled:find("Epic")
+            legendary = not disabled:find("Legendary")
+        else
+            epic = rarity == "Epic"
+            legendary = rarity == "Legendary"
+        end
+        local info = {
+            name = name, perks = perks, group = wide_group(name, class), class = class, id = id,
+            tier = tonumber(name:match("_T(%d+)")), gen = gen, disabled = disabled,
+            legendary = legendary, eligible = epic or legendary,
+        }
+        items[r.guid] = info
         item_order[#item_order + 1] = r.guid
+        if info.eligible then eligible_count = eligible_count + 1 end
         for slot, p in ipairs(perks) do
             if p ~= NONE then
-                -- Per-slot pools keep tiers right: vanilla puts higher-tier perks
-                -- only in the slots that unlock at higher levels.
-                if fine then pool_add(fine .. "#" .. slot, p); pool_add(fine, p) end
-                if coarse then pool_add(coarse .. "#" .. slot, p); pool_add(coarse, p) end
+                -- Per-slot pools: vanilla puts higher-tier perks only in the slots
+                -- that unlock at higher levels. The group-wide pool is the fallback.
+                pool_add(info.group .. "#" .. slot, p)
+                pool_add(info.group, p)
+                -- Capstone pool: what vanilla puts in slot 5 of items that can be Legendary.
+                if slot == 5 and legendary then pool_add(info.group .. "#cap", p) end
             end
         end
     end
 end
 table.sort(item_order)
-log(string.format("%d registered items have perks", #item_order))
+log(string.format("%d registered items have perks, %d can drop as Epic or Legendary (only these get variants)",
+    #item_order, eligible_count))
 
 ---------------------------------------------------------------------------
 -- Roll perks
 --
--- Slot k draws from, in order, the first pool with at least MIN_CHOICES
--- allowed candidates: fine#k, coarse#k, fine, coarse. "Allowed" means:
---   - skill perks only for the item's class (or Generic); class-neutral items
---     pick one class per variant from the classes their pool offers;
---   - the same perk at most MAX_SAME_PERK times, a family at most its cap.
--- If no pool has any allowed candidate, the slot keeps its vanilla perk.
+-- Each variant first picks a class (skill perks only for the item's class or
+-- Generic; class-neutral items pick one class per variant) and a theme
+-- (archetype) offered by its group's pool. Slot k then draws from the first
+-- pool with at least MIN_CHOICES allowed candidates: group#k, group. With
+-- probability THEME_BIAS the candidates are narrowed to the theme, if any fit
+-- (soft themes: pools never get too narrow). Every pick is swapped for the
+-- member of its tier line that fits the item's tier. Slot 5 of items that can
+-- be Legendary is the capstone: drawn from the group#cap pool, one tier up.
+-- Same perk at most MAX_SAME_PERK times, a family at most its cap.
 ---------------------------------------------------------------------------
 
 local CLASSES = { "Mage", "Ranger", "Warrior" }
+local THEMES = { "Elemental", "Physical", "Precision", "Sustain", "Skill", "Vitality" }
 
 local function roll_perks(guid, info, attempt)
-    local next_int = rng(SEED .. "|" .. guid .. "|roll" .. attempt)
+    local next_int = rng(ROLL_SEED .. "|" .. guid .. "|roll" .. attempt)
+    local group_pool = pools[info.group]
 
     local variant_class = info.class
     if variant_class == nil or variant_class == "None" then
         local offered = {}
-        local pool = pools[info.coarse]
         for _, c in ipairs(CLASSES) do
-            for _, p in ipairs(pool and pool.list or {}) do
+            for _, p in ipairs(group_pool.list) do
                 if perk_class[p] == c then offered[#offered + 1] = c; break end
             end
         end
         variant_class = (#offered > 0) and offered[next_int(#offered)] or nil
     end
+    local function class_ok(p)
+        local c = perk_class[p]
+        return not c or c == "Generic" or c == variant_class
+    end
+
+    local themes = {}
+    for _, t in ipairs(THEMES) do
+        for _, p in ipairs(group_pool.list) do
+            if perk_theme[p] == t and class_ok(p) then themes[#themes + 1] = t; break end
+        end
+    end
+    local theme = (#themes > 0) and themes[next_int(#themes)] or nil
 
     local same, family = {}, {}
     local function allowed(p)
-        local c = perk_class[p]
-        if c and c ~= "Generic" and c ~= variant_class then return false end
+        if not class_ok(p) then return false end
         if (same[p] or 0) >= MAX_SAME_PERK then return false end
         local f = perk_family[p]
         if (family[f] or 0) >= (FAMILY_CAP[f] or DEFAULT_FAMILY_CAP) then return false end
@@ -329,20 +431,34 @@ local function roll_perks(guid, info, attempt)
     end
 
     local result = {}
-    for slot, original in ipairs(info.perks) do
-        local pick = original
-        if original ~= NONE then
+    for slot, vanilla in ipairs(info.perks) do
+        local pick = vanilla
+        if vanilla ~= NONE then
+            local capstone = slot == 5 and info.legendary
+            local tier = info.tier and (capstone and info.tier + 1 or info.tier)
+            local keys = capstone and { info.group .. "#cap", info.group .. "#5", info.group }
+                or { info.group .. "#" .. slot, info.group }
             local candidates
-            for _, key in ipairs({ info.fine and (info.fine .. "#" .. slot), info.coarse and (info.coarse .. "#" .. slot), info.fine, info.coarse }) do
-                local pool = key and pools[key]
+            for _, key in ipairs(keys) do
+                local pool = pools[key]
                 if pool then
                     local list = {}
-                    for _, p in ipairs(pool.list) do if allowed(p) then list[#list + 1] = p end end
+                    for _, p in ipairs(pool.list) do
+                        local q = at_tier(p, tier)
+                        if allowed(q) then list[#list + 1] = q end
+                    end
                     if #list >= MIN_CHOICES then candidates = list; break end
                     if #list > 0 and not candidates then candidates = list end
                 end
             end
-            if candidates then pick = candidates[next_int(#candidates)] end
+            if candidates then
+                if theme and next_int(1000) <= THEME_BIAS * 1000 then
+                    local themed = {}
+                    for _, q in ipairs(candidates) do if perk_theme[q] == theme then themed[#themed + 1] = q end end
+                    if #themed > 0 then candidates = themed end
+                end
+                pick = candidates[next_int(#candidates)]
+            end
         end
         result[slot] = pick
         if pick ~= NONE then
@@ -351,7 +467,39 @@ local function roll_perks(guid, info, attempt)
             family[f] = (family[f] or 0) + 1
         end
     end
-    return result
+    return result, theme
+end
+
+-- Acceptance: a variant must be visibly different from vanilla (>= MIN_CHANGES
+-- of the slots an epic shows) and not a reshuffle of vanilla or a sibling
+-- (>= MIN_DISTINCT perks not matched in the other's multiset).
+local function new_perks(a, b)
+    local count = {}
+    for _, p in ipairs(b) do if p ~= NONE then count[p] = (count[p] or 0) + 1 end end
+    local n = 0
+    for _, p in ipairs(a) do
+        if p ~= NONE then
+            if (count[p] or 0) > 0 then count[p] = count[p] - 1 else n = n + 1 end
+        end
+    end
+    return n
+end
+
+local function acceptable(perks, info, siblings)
+    local slots, visible_changes = 0, 0
+    for i, p in ipairs(info.perks) do
+        if p ~= NONE then
+            slots = slots + 1
+            if i <= 4 and perks[i] ~= p then visible_changes = visible_changes + 1 end
+        end
+    end
+    local need = math.min(MIN_CHANGES, slots)
+    if visible_changes < need then return false end
+    if new_perks(perks, info.perks) < math.min(MIN_DISTINCT, slots) then return false end
+    for _, v in ipairs(siblings) do
+        if new_perks(perks, v.perks) < math.min(MIN_DISTINCT, slots) then return false end
+    end
+    return true
 end
 
 ---------------------------------------------------------------------------
@@ -430,6 +578,14 @@ local function create_variant(original, info, source, index, perks)
             data.perkIds[slot].value = game.guid.hash(p)
         end
     end
+    if info.gen then
+        -- Variants exist only as Epic/Legendary: their generated rarity can never be
+        -- Common/Uncommon/Rare (the original keeps those, see the loot pool).
+        local mask = { "Common", "Uncommon", "Rare" }
+        if info.disabled:find("Epic") then mask[#mask + 1] = "Epic" end
+        if info.disabled:find("Legendary") then mask[#mask + 1] = "Legendary" end
+        data.disableRarityGeneration = mask
+    end
     return { original = original, original_id = info.id, index = index, guid = guid, id = id, name = name, perks = perks }
 end
 
@@ -471,14 +627,17 @@ for _, original in ipairs(item_order) do
         stats.pinned = stats.pinned + 1
     end
 
-    for attempt = 1, ROLL_ATTEMPTS do
+    -- New rolls only for items that can drop as Epic/Legendary (pinned variants of
+    -- other items are still rebuilt above, so saves keep them).
+    for attempt = 1, info.eligible and ROLL_ATTEMPTS or 0 do
         if #list >= MAX_VARIANTS then break end
-        local perks = roll_perks(original, info, attempt)
+        local perks, theme = roll_perks(original, info, attempt)
         local signature = table.concat(perks, ",")
-        if not seen[signature] then
+        if not seen[signature] and acceptable(perks, info, list) then
             seen[signature] = true
             local index = #list + 1
             local v = create_variant(original, info, source, index, perks)
+            v.theme = theme
             list[index] = v
             variants[#variants + 1] = v
             stats.rolled = stats.rolled + 1
@@ -542,17 +701,39 @@ do
     local loot_index = {}
     for i, id in ipairs(ids) do loot_index[id] = i end
 
-    local swapped = 0
+    -- Rarity split for items whose rarity is rolled at drop: variant entries allow
+    -- only Epic/Legendary, the original keeps Common/Uncommon/Rare. UNVERIFIED
+    -- ASSUMPTION: the picker rolls a rarity first (globalRarityDropRates) and then
+    -- picks among entries whose `rarities` mask allows it, so the original keeps
+    -- its full weight and the variants share it (weights / n). Items with a fixed
+    -- Epic/Legendary rarity drop only as variants (original's labels cleared).
+    local LOW, HIGH = { Common = true, Uncommon = true, Rare = true }, { Epic = true, Legendary = true }
+    local function mask_of(entry)
+        local names = {}
+        for n in ((tostring(entry):match('"rarities":%[(.-)%]')) or ""):gmatch('"(%a+)"') do names[#names + 1] = n end
+        if #names == 0 then names = { "Common", "Uncommon", "Rare", "Epic", "Legendary" } end
+        return names
+    end
+    local function keep(names, set)
+        local out = {}
+        for _, n in ipairs(names) do if set[n] then out[#out + 1] = n end end
+        return out
+    end
+
+    local swapped, split = 0, 0
     for _, original in ipairs(item_order) do
         local list = variants_of[original]
         if #list > 0 then
-            local i = loot_index[items[original].id]
-            if not i then error("perk-variants: no loot entry for " .. items[original].name) end
+            local info = items[original]
+            local i = loot_index[info.id]
+            if not i then error("perk-variants: no loot entry for " .. info.name) end
             local original_entry = loot.items[i]
             local labels = original_entry.labelGroups
             local random_drop = #labels.labels > 0 or #labels.childGroups > 0
             local labeled = math.min(#list, RANDOM_LOOT_VARIANTS)
-            local first -- index of variant 1's entry; variants 2..n clone it (scaled weights included)
+            local mask = mask_of(original_entry)
+            local low, high = keep(mask, LOW), keep(mask, HIGH)
+            local first -- index of variant 1's entry; variants 2..n clone it (scaled weights and mask included)
             for k, v in ipairs(list) do
                 table.insert(reg.itemRefs, v.guid)
                 table.insert(reg.dbgNames, v.name)
@@ -562,17 +743,24 @@ do
                 if k == 1 then
                     first = #loot.items
                     if random_drop then scale_label_weights(entry.labelGroups, labeled) end
+                    if info.gen and #high > 0 then entry.rarities = high end
                 elseif k > labeled and random_drop then
                     entry.labelGroups = { labels = {}, childGroups = {} } -- presets only
                 end
             end
             if random_drop then
-                original_entry.labelGroups = { labels = {}, childGroups = {} }
-                swapped = swapped + 1
+                if info.gen and #low > 0 then
+                    original_entry.rarities = low
+                    split = split + 1
+                else
+                    original_entry.labelGroups = { labels = {}, childGroups = {} }
+                    swapped = swapped + 1
+                end
             end
         end
     end
-    log(string.format("registry + loot pool: appended %d variants; %d random-loot items now drop as variants", #variants, swapped))
+    log(string.format("registry + loot pool: appended %d variants; random loot: %d items drop only as variants, %d split (original Common-Rare, variants Epic/Legendary)",
+        #variants, swapped, split))
 end
 
 ---------------------------------------------------------------------------
@@ -584,9 +772,13 @@ end
 ---------------------------------------------------------------------------
 
 do
+    -- Preset stacks have no rarity field: an item whose rarity is rolled at drop
+    -- would make a fixed spot yield variants at any rarity (or, with the variants'
+    -- rarity restriction, always Epic/Legendary). So presets keep vanilla items
+    -- for those; only items with a fixed Epic/Legendary rarity become variants.
     local by_guid = {}
     for original, list in pairs(variants_of) do
-        if #list > 0 then by_guid[original] = list end
+        if #list > 0 and not items[original].gen then by_guid[original] = list end
     end
     local in_selectors, in_plain, touched = 0, 0, 0
 
@@ -835,8 +1027,10 @@ if loader.features.export then
         -- The original's perks too: low-rarity drops show only the first slot(s), so
         -- telling a variant from vanilla in game needs the vanilla perks side by side.
         for s, p in ipairs(items[v.original].perks) do vanilla[s] = perk_names[p] or p end
-        lines[i] = string.format('{"original":"%s","originalId":%d,"index":%d,"name":"%s","variant":"%s","itemId":%d,"perks":["%s"],"vanilla":["%s"]}',
-            v.original, v.original_id, v.index, v.name, v.guid, v.id, table.concat(names, '","'), table.concat(vanilla, '","'))
+        local info = items[v.original]
+        lines[i] = string.format('{"original":"%s","originalId":%d,"index":%d,"name":"%s","variant":"%s","itemId":%d,"group":"%s","theme":"%s","rolledRarity":%s,"legendary":%s,"perks":["%s"],"vanilla":["%s"]}',
+            v.original, v.original_id, v.index, v.name, v.guid, v.id, info.group, v.theme or "", tostring(info.gen), tostring(info.legendary),
+            table.concat(names, '","'), table.concat(vanilla, '","'))
     end
     io.export("perk-variants/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")
 
