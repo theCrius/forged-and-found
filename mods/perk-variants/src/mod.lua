@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.4.0 (test worlds only).
+-- Perk Variants prototype 0.4.1 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -77,7 +77,7 @@ local PAIR_TEST = false
 local ROLL_ATTEMPTS = MAX_VARIANTS * 10 -- rolls tried per item to find distinct variants
 local MIN_CHOICES = 2                   -- a slot pool needs this many candidates before falling back to a wider one
 local MAX_SAME_PERK = 2                 -- the same perk at most twice on one item
-local FAMILY_CAP = { Skill = 3, Damage = 3 }
+local FAMILY_CAP = { Skill = 3, Damage = 3, DamageAgainst = 1 } -- one "damage vs <creature>" per item
 local DEFAULT_FAMILY_CAP = 2
 local THEME_BIAS = 0.6                  -- chance that a slot is limited to the variant's theme (if the pool has any)
 local MIN_CHANGES = 2                   -- a variant differs from vanilla in >= 2 of the slots an epic shows (1-4)
@@ -273,17 +273,18 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::Perk")) do
 end
 
 -- The member of p's tier line that fits an item of the given tier: the one
--- whose range covers it, else the highest below it, else the lowest.
+-- whose range covers it, else the highest below it. nil if every member is
+-- above the tier (lines that only exist at high tiers, e.g. *_Vs_Soaked_T6,
+-- would otherwise land on low-tier items).
 local function at_tier(p, tier)
     local line = perk_line[p]
     if not line or not tier then return p end
-    local best, best_lo, low, low_lo
+    local best, best_lo
     for _, m in ipairs(line_members[line]) do
         if m.lo <= tier and tier <= m.hi then return m.guid end
         if m.lo <= tier and (not best_lo or m.lo > best_lo) then best, best_lo = m.guid, m.lo end
-        if not low_lo or m.lo < low_lo then low, low_lo = m.guid, m.lo end
     end
-    return best or low
+    return best
 end
 
 local registered = {}
@@ -353,15 +354,19 @@ for _, r in ipairs(game.assets.get_resources_by_type("keen::ItemInfo")) do
             epic = rarity == "Epic"
             legendary = rarity == "Legendary"
         end
+        -- Special sets keep their identity and stay out of the pools: dungeon/enemy
+        -- "_TX_" items (Hollow Halls: Blunt + vs Skeleton on every weapon type, even
+        -- bows; Fog Nest: Shroud) and NPC-only gear. Normal "T1-TX" enemy drops stay.
+        local special = name:find("_TX_") or name:find("NPC_ONLY")
         local info = {
             name = name, perks = perks, group = wide_group(name, class), class = class, id = id,
             tier = tonumber(name:match("_T(%d+)")), gen = gen, disabled = disabled,
-            legendary = legendary, eligible = epic or legendary,
+            legendary = legendary, eligible = (epic or legendary) and not special,
         }
         items[r.guid] = info
         item_order[#item_order + 1] = r.guid
         if info.eligible then eligible_count = eligible_count + 1 end
-        for slot, p in ipairs(perks) do
+        for slot, p in ipairs(special and {} or perks) do
             if p ~= NONE then
                 -- Per-slot pools: vanilla puts higher-tier perks only in the slots
                 -- that unlock at higher levels. The group-wide pool is the fallback.
@@ -445,7 +450,7 @@ local function roll_perks(guid, info, attempt)
                     local list = {}
                     for _, p in ipairs(pool.list) do
                         local q = at_tier(p, tier)
-                        if allowed(q) then list[#list + 1] = q end
+                        if q and allowed(q) then list[#list + 1] = q end
                     end
                     if #list >= MIN_CHOICES then candidates = list; break end
                     if #list > 0 and not candidates then candidates = list end
