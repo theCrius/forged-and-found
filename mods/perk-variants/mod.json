@@ -1,8 +1,8 @@
 {
   "id": "perk-variants",
   "name": "Perk Variants (prototype)",
-  "version": "0.8.8",
-  "description": "PROTOTYPE, test worlds only. Adds up to 6 variants with rerolled enhancements for items that can drop as Epic or Legendary. Random loot stays vanilla for now; fixed chests drop variants. Vanilla items unchanged; crafted equipment gets rarity by item level.",
+  "version": "0.9.0",
+  "description": "PROTOTYPE, test worlds only. Adds up to 6 variants with rerolled enhancements for items that can drop as Epic or Legendary. Epic and Legendary loot from chests, enemy remains and enemies rolls among vanilla and its variants (native DLL). Vanilla items unchanged; crafted equipment gets rarity by item level.",
   "authors": ["Crius"],
   "dependencies": [],
   "capabilities": ["patch", "export"]

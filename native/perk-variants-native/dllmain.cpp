@@ -1,9 +1,16 @@
 // perk-variants-native: the native half of the perk-variants mod.
 //
-// 0.2.0 (log-only hook): hooks the function that creates loot items into an
-// inventory, enshrouded.exe+0x40B4F0 (research/loot-item-creation.md), and logs
-// every call (item, count, level, rarity, caller, thread). It changes nothing: the
-// original runs with the exact arguments it was called with.
+// Hooks the function that creates new items into an inventory, enshrouded.exe+0x40B4F0
+// (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
+// enemy loot, world pickups, gathering), not for moving items and not for crafting.
+//
+// 0.3.0 (swap): when a verified loot caller creates an Epic or Legendary item that has
+// variants, the item is rolled uniformly among {vanilla, variant 1..n} and the chosen
+// ItemId is passed on instead (developer's design, CLAUDE.md "Delivery design"). The
+// variant table comes from the data mod's export (shroudforge/exports/perk-variants/
+// manifest.json, written in the asset pass before this DLL loads); lore items never
+// have variants. Callers whose rarity argument is not verified (world pickups, the
+// fixed-item loop) are only logged, and the crafting UI's simulated adds are skipped.
 //
 // Safety: the hook is installed only when the host is the exact client build it was
 // written for (PE TimeDateStamp + SizeOfImage) and the target's first 15 bytes are
@@ -16,14 +23,26 @@
 
 #include <windows.h>
 #include <intrin.h>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <unordered_map>
+#include <vector>
 
 namespace {
 
-constexpr const char* kVersion = "0.2.2";
+constexpr const char* kVersion = "0.3.0";
+
+// Callers (return addresses) whose 8th argument is proven to be the item's rarity:
+// +0x3C0C7B chest/enemy-remains picker (Sleek Daggers, Shivs: Epic as in the tooltip),
+// +0x3F9E2F enemy loot (Scrap Shield: Rare as in the tooltip).
+constexpr uintptr_t kSwapCallers[] = {0x3C0C7B, 0x3F9E2F};
+// The crafting UI's simulated adds (~3700 calls/s, main thread): never swapped or logged.
+constexpr uintptr_t kCraftingUiCaller = 0x3F2258;
+constexpr uint8_t kEpic = 3, kLegendary = 4;
 
 // Build 1273043 client, enshrouded.exe SHA-256 d64966e2... (ShroudForge profile 26082781).
 constexpr DWORD kTimeDateStamp = 0x6AD77F0C;
@@ -50,6 +69,10 @@ HANDLE g_log = INVALID_HANDLE_VALUE;
 SRWLOCK g_log_lock = SRWLOCK_INIT;
 uintptr_t g_image_base = 0;
 CreateItemFn g_create_item_original = nullptr;  // trampoline: saved prologue + jump back
+
+// Original ItemId -> its variants' ItemIds. Filled once in DllMain, read-only afterwards.
+std::unordered_map<uint32_t, std::vector<uint32_t>>* g_variants = nullptr;
+std::atomic<uint64_t> g_roll_counter{0};
 
 // <game>/shroudforge/logs/perk-variants-native.log; <game> is the host exe's folder.
 bool resolve_log_path() {
@@ -126,10 +149,58 @@ void log_caller_summary() {
     ReleaseSRWLockShared(&g_stats_lock);
 }
 
+uint64_t splitmix64(uint64_t x) {
+    x += 0x9E3779B97F4A7C15ull;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+    return x ^ (x >> 31);
+}
+
+bool is_swap_caller(uintptr_t caller) {
+    for (uintptr_t c : kSwapCallers) {
+        if (c == caller) return true;
+    }
+    return false;
+}
+
+// Decides which ItemId to forward for an item that has variants. Returns the
+// (possibly unchanged) 64-bit slot; only its low 32 bits are the ItemId.
+uint64_t roll_item(uint64_t item_id, uint64_t rarity_ptr, uintptr_t caller, const std::vector<uint32_t>& variants) {
+    uint32_t item = static_cast<uint32_t>(item_id);
+    uint8_t ra = 0;
+    bool has_ra = read_u8(reinterpret_cast<const uint8_t*>(rarity_ptr), &ra);
+    char text[256];
+    if (!is_swap_caller(caller)) {
+        snprintf(text, sizeof text, "not swapped (unverified caller +0x%llX): item=%u rarity byte=%s%u",
+                 static_cast<unsigned long long>(caller), item, has_ra ? "" : "?", ra);
+        log_line(text);
+        return item_id;
+    }
+    if (!has_ra || (ra != kEpic && ra != kLegendary)) {
+        snprintf(text, sizeof text, "kept vanilla (rarity %s%u, below Epic): item=%u caller=+0x%llX", has_ra ? "" : "?",
+                 ra, item, static_cast<unsigned long long>(caller));
+        log_line(text);
+        return item_id;
+    }
+    uint64_t seed = __rdtsc() ^ (g_roll_counter.fetch_add(1, std::memory_order_relaxed) << 32) ^ item;
+    uint64_t pick = splitmix64(seed) % (variants.size() + 1);  // 0 = vanilla, k = variant k
+    uint32_t chosen = pick == 0 ? item : variants[pick - 1];
+    snprintf(text, sizeof text, "roll %s: item=%u -> %u (%s %llu of %zu) caller=+0x%llX",
+             ra == kEpic ? "Epic" : "Legendary", item, chosen, pick == 0 ? "vanilla," : "variant",
+             static_cast<unsigned long long>(pick), variants.size(), static_cast<unsigned long long>(caller));
+    log_line(text);
+    return (item_id & 0xFFFFFFFF00000000ull) | chosen;
+}
+
 uint64_t create_item_hook(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t item_id, uint64_t count,
                           uint64_t level_ptr, uint64_t rarity_ptr, uint64_t a9) {
     uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_image_base;
     uint64_t calls = count_call(caller);
+    uint64_t forward_id = item_id;
+    if (caller != kCraftingUiCaller && g_variants) {
+        auto it = g_variants->find(static_cast<uint32_t>(item_id));
+        if (it != g_variants->end()) forward_id = roll_item(item_id, rarity_ptr, caller, it->second);
+    }
     if (calls > kFullLines) {
         if (is_power_of_ten(calls)) {
             char text[128];
@@ -137,18 +208,76 @@ uint64_t create_item_hook(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, ui
                      static_cast<unsigned long long>(calls));
             log_line(text);
         }
-        return g_create_item_original(a1, a2, a3, a4, item_id, count, level_ptr, rarity_ptr, a9);
+    } else {
+        uint32_t lv = 0;
+        uint8_t ra = 0;
+        bool has_lv = read_u32(reinterpret_cast<const uint32_t*>(level_ptr), &lv);
+        bool has_ra = read_u8(reinterpret_cast<const uint8_t*>(rarity_ptr), &ra);
+        char text[256];
+        snprintf(text, sizeof text, "create item=%u count=%u level=%s%u rarity=%s%u caller=+0x%llX thread=%lu",
+                 static_cast<uint32_t>(forward_id), static_cast<uint32_t>(count), has_lv ? "" : "?", lv,
+                 has_ra ? "" : "?", ra, static_cast<unsigned long long>(caller), GetCurrentThreadId());
+        log_line(text);
     }
-    uint32_t lv = 0;
-    uint8_t ra = 0;
-    bool has_lv = read_u32(reinterpret_cast<const uint32_t*>(level_ptr), &lv);
-    bool has_ra = read_u8(reinterpret_cast<const uint8_t*>(rarity_ptr), &ra);
-    char text[256];
-    snprintf(text, sizeof text, "create item=%u count=%u level=%s%u rarity=%s%u caller=+0x%llX thread=%lu",
-             static_cast<uint32_t>(item_id), static_cast<uint32_t>(count), has_lv ? "" : "?", lv, has_ra ? "" : "?",
-             ra, static_cast<unsigned long long>(caller), GetCurrentThreadId());
-    log_line(text);
-    return g_create_item_original(a1, a2, a3, a4, item_id, count, level_ptr, rarity_ptr, a9);
+    return g_create_item_original(a1, a2, a3, a4, forward_id, count, level_ptr, rarity_ptr, a9);
+}
+
+// Reads the data mod's export: one variant per line, with "originalId":N and "itemId":N.
+// <game>/shroudforge/exports/perk-variants/manifest.json, written by the asset pass of
+// this launch (or the last launch that patched, when the pass was skipped as unchanged).
+bool load_variant_table(char* text, size_t text_size) {
+    wchar_t path[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return false;
+    wchar_t* slash = wcsrchr(path, L'\\');
+    if (!slash) return false;
+    *slash = L'\0';
+    wchar_t file[MAX_PATH];
+    swprintf(file, MAX_PATH, L"%s\\shroudforge\\exports\\perk-variants\\manifest.json", path);
+
+    HANDLE h = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        snprintf(text, text_size, "no variant table (shroudforge/exports/perk-variants/manifest.json missing)");
+        return false;
+    }
+    LARGE_INTEGER size{};
+    GetFileSizeEx(h, &size);
+    std::vector<char> data(static_cast<size_t>(size.QuadPart) + 1, '\0');
+    DWORD read = 0;
+    BOOL ok = ReadFile(h, data.data(), static_cast<DWORD>(size.QuadPart), &read, nullptr);
+    CloseHandle(h);
+    if (!ok || read != size.QuadPart) {
+        snprintf(text, text_size, "variant table unreadable");
+        return false;
+    }
+
+    auto* table = new std::unordered_map<uint32_t, std::vector<uint32_t>>();
+    size_t variants = 0, bad = 0;
+    for (char* line = data.data(); *line;) {
+        char* end = strchr(line, '\n');
+        if (end) *end = '\0';
+        const char* o = strstr(line, "\"originalId\":");
+        const char* v = strstr(line, "\"itemId\":");
+        if (o && v) {
+            unsigned long original = strtoul(o + 13, nullptr, 10), variant = strtoul(v + 9, nullptr, 10);
+            if (original == 0 || variant == 0 || original == variant) {
+                ++bad;
+            } else {
+                (*table)[static_cast<uint32_t>(original)].push_back(static_cast<uint32_t>(variant));
+                ++variants;
+            }
+        }
+        if (!end) break;
+        line = end + 1;
+    }
+    if (variants == 0 || bad > 0) {
+        snprintf(text, text_size, "variant table rejected (%zu variants, %zu bad lines)", variants, bad);
+        delete table;
+        return false;
+    }
+    g_variants = table;
+    snprintf(text, text_size, "variant table: %zu items with %zu variants", table->size(), variants);
+    return true;
 }
 
 // Replaces the 15-byte prologue at `target` with `jmp [rip+0]; dq hook; nop` after
@@ -203,11 +332,15 @@ void start() {
         log_line("inactive: create-item prologue differs (patched by something else?), no hook installed");
         return;
     }
+    // Without a valid table the hook still installs, but only logs (g_variants stays null).
+    bool swapping = load_variant_table(text, sizeof text);
+    log_line(text);
     if (!install_hook(target, reinterpret_cast<void*>(&create_item_hook))) {
         log_line("inactive: could not install the create-item hook");
         return;
     }
-    log_line("hook installed at +0x40B4F0 (log only)");
+    log_line(swapping ? "hook installed at +0x40B4F0 (swapping Epic/Legendary loot for variants)"
+                      : "hook installed at +0x40B4F0 (log only: no variant table)");
 }
 
 }  // namespace
