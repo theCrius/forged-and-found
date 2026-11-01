@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.2 (test worlds only).
+-- Perk Variants prototype 0.6.3 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -892,15 +892,15 @@ end
 ---------------------------------------------------------------------------
 
 local CRAFTED_ARMOR_FROM, CRAFTED_ARMOR_TO = "Rare", "Epic"
+local crafted = {}   -- GUIDs of every recipe output
+for list in text_of(single("keen::RecipeRegistryResource")):gmatch('"output":%[(.-)%]') do
+    for g in list:gmatch('"itemRef":"([%x%-]+)"') do crafted[g] = true end
+end
 do
-    local outputs = {}
-    for list in text_of(single("keen::RecipeRegistryResource")):gmatch('"output":%[(.-)%]') do
-        for g in list:gmatch('"itemRef":"([%x%-]+)"') do outputs[g] = true end
-    end
     local changed = 0
     for _, original in ipairs(item_order) do
         local info = items[original]
-        if outputs[original] and info.name:find("^Armor_") and not info.gen then
+        if crafted[original] and info.name:find("^Armor_") and not info.gen then
             local defined = 0
             for _, p in ipairs(info.perks) do if p ~= NONE then defined = defined + 1 end end
             local resource = game.assets.get_resource(original, "keen::ItemInfo")
@@ -911,6 +911,56 @@ do
         end
     end
     log(string.format("crafted armor: %d pieces set from %s to %s", changed, CRAFTED_ARMOR_FROM, CRAFTED_ARMOR_TO))
+end
+
+---------------------------------------------------------------------------
+-- Crafted lore items at the armor level of their tier (developer, 2026-11-01)
+--
+-- Lore recipes open at the same flame altar levels as the armor sets of their
+-- tier (T2..T7 = flame 3,4,5,6,8,9), but the lore copies' fixed item levels
+-- (6,11,16,21,26,36,46) fall behind the armor from T5 on (armor 30, 40, 45; two
+-- T7 lore shields are at 36). Each lore copy gets at least the most common
+-- level of the crafted armor of its tier, read from the data (follows updates).
+---------------------------------------------------------------------------
+
+do
+    local counts = {}   -- tier -> level -> count, crafted armor only
+    for _, original in ipairs(item_order) do
+        local info = items[original]
+        if crafted[original] and info.name:find("^Armor_") and info.tier then
+            local level = tonumber(text_of(game.assets.get_resource(original, "keen::ItemInfo")):match('"itemLevelRange":{"minLevel":(%d+)'))
+            if level then
+                counts[info.tier] = counts[info.tier] or {}
+                counts[info.tier][level] = (counts[info.tier][level] or 0) + 1
+            end
+        end
+    end
+    local armor_level, parts = {}, {}
+    for tier = 0, 9 do
+        local best, best_n = nil, 0
+        for level, n in pairs(counts[tier] or {}) do
+            if n > best_n or (n == best_n and level > best) then best, best_n = level, n end
+        end
+        if best then armor_level[tier] = best; parts[#parts + 1] = "T" .. tier .. "=" .. best end
+    end
+    log("crafted armor level per tier: " .. table.concat(parts, " "))
+
+    local raised = 0
+    for _, original in ipairs(item_order) do
+        local info = items[original]
+        local target = info.tier and armor_level[info.tier]
+        if target and info.name:find("^Craft_") and info.name:find("_Lore_") then
+            local resource = game.assets.get_resource(original, "keen::ItemInfo")
+            local min, max = text_of(resource):match('"itemLevelRange":{"minLevel":(%d+),"maxLevel":(%d+)}')
+            if tonumber(min) and tonumber(min) < target then
+                local range = resource.data.itemLevelRange
+                range.minLevel = target
+                if tonumber(max) < target then range.maxLevel = target end
+                raised = raised + 1
+            end
+        end
+    end
+    log(string.format("crafted lore items: %d raised to their tier's armor level", raised))
 end
 
 ---------------------------------------------------------------------------
