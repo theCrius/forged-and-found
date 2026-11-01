@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.7.2 (test worlds only; 4 random-loot variants per item for a crash test).
+-- Perk Variants prototype 0.7.2 (test worlds only; 5 random-loot variants per item for a crash test).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -75,8 +75,9 @@ local MAX_VARIANTS = 6
 -- TEST 0.7.2: opening chests crashed with 6 ("No allocator set in BaseDynamicArray",
 -- 0.7.0 and 0.7.1). Hypothesis: a per-label candidate list has a fixed capacity
 -- (4096?). Entries per loot label, busiest label: vanilla 779, 4 per item 3194
--- (0.2.10 used 4 per item and chests worked: 3201), 6 per item 4420.
-local RANDOM_LOOT_VARIANTS = 4
+-- (0.2.10 used 4 per item and chests worked: 3201), 5 per item 3807, 6 per
+-- item 4420. Developer: try 5 first, fall back to 4 if it still crashes.
+local RANDOM_LOOT_VARIANTS = 5
 -- TEST switch: preset entries that always spawn drop the original AND a variant,
 -- so both can be compared side by side. false = normal behaviour (variant only).
 local PAIR_TEST = false
