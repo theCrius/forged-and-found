@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.8 (test worlds only; LABEL_TEST on).
+-- Perk Variants prototype 0.6.9 (test worlds only; NAME_TEST on).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -1087,38 +1087,86 @@ do
 end
 
 ---------------------------------------------------------------------------
--- TEST (research for a variant marker, remove afterwards). 0.6.7 showed that
--- equipment ignores ItemInfo.caption but shows an item tag's label (the lore tag
--- added "Lore Item"). Tag labels come from ItemRegistryResource.itemTags
--- {tagGuid, labelId}. Do new tags of our own work, with existing texts as labels?
--- T5 crafted shields at the Blacksmith: DPS gets new tag A ("Special Item"),
--- Rogue new tag B ("Unique Equipment"), Tank the existing "Special" tag.
+-- TEST (research for a variant marker, remove afterwards). 0.6.7/0.6.8: tooltips
+-- ignore ItemInfo.caption, and the "Lore Item" line is hardcoded for the lore tag
+-- (its registry label is the empty GUID; other tags' labels never show). So:
+-- can the mod add texts of its own and give an item a new name?
+-- Names are LocaTagReferences: GUID -> game.guid.hash -> LocaTagId, looked up
+-- in LocaTagCollectionResourceData.tags (sorted by id) of a content blob. The
+-- test decodes the blob, inserts new texts in id order, re-encodes it as new
+-- content and points the collection at it. Both English tables are patched
+-- (En_Us and keenglishData) with a different suffix to see which one is shown.
+-- T5 crafted shields: DPS "• name", Rogue "<img vanity> name", Tank in
+-- <lorename> style.
 ---------------------------------------------------------------------------
 
-local LABEL_TEST = true
-if LABEL_TEST then
-    local NEW_TAGS = {
-        Shield_T5_DPS = { guid = "d278bb23-ed92-4e98-ab2a-768f34441e7c", label = 1795441266 },  -- "Special Item"
-        Shield_T5_Rogue = { guid = "ef6f54de-ec87-4fad-9fa5-29e82009654f", label = 3036299198 }, -- "Unique Equipment"
+local NAME_TEST = true
+if NAME_TEST then
+    local LOCA_DATA = "keen::LocaTagCollectionResourceData"
+    local FORMATS = {
+        Shield_T5_DPS = "• %s",
+        Shield_T5_Rogue = "<img vanity> %s",
+        Shield_T5_Tank = "<lorename>%s</lorename>",
     }
-    local SPECIAL_TAG = "5dd3db6f-62b3-4a59-804e-e2b50350cae0" -- vanilla, label "Special"
-    local reg_tags = single("keen::ItemRegistryResource").data.itemTags
-    for _, t in pairs(NEW_TAGS) do
-        table.insert(reg_tags, reg_tags[1])
-        reg_tags[#reg_tags].tagGuid = t.guid
-        reg_tags[#reg_tags].labelId.value = t.label
-    end
-    log(string.format("LABEL_TEST: registry itemTags now %d", #reg_tags))
+    local renames = {} -- { info, name, guid, id, format }
     for _, original in ipairs(item_order) do
         local name = items[original].name
-        local tag = (NEW_TAGS[name] and NEW_TAGS[name].guid) or (name == "Shield_T5_Tank" and SPECIAL_TAG)
-        if tag then
-            local tags = game.assets.get_resource(original, "keen::ItemInfo").data.tags
-            table.insert(tags, tags[1])
-            tags[#tags].tag = tag
-            tags[#tags].nominator = 1
-            log("LABEL_TEST: tag " .. tag .. " added to " .. name)
+        if FORMATS[name] then
+            local info = game.assets.get_resource(original, "keen::ItemInfo").data
+            local guid = derive_guid("perk-variants/name-test/" .. name)
+            renames[#renames + 1] = { info = info, name = name, old_id = game.guid.hash(tostring(info.name)),
+                guid = guid, id = game.guid.hash(guid), format = FORMATS[name] }
         end
+    end
+
+    local function content_of(hash)
+        local ok, c = pcall(game.assets.get_content, hash)
+        if ok and c then return c end
+        return game.assets.get_content(game.guid.from_content_hash(hash))
+    end
+
+    -- Returns the index of id in the sorted tags array, or nil and the insert position.
+    local function find(tags, id)
+        local lo, hi = 1, #tags
+        while lo <= hi do
+            local mid = (lo + hi) // 2
+            local v = tags[mid].id.value
+            if v == id then return mid end
+            if v < id then lo = mid + 1 else hi = mid - 1 end
+        end
+        return nil, lo
+    end
+
+    local function patch_table(ref, label, suffix)
+        local data = content_of(ref.hash):read_data():read_resource(LOCA_DATA)
+        local tags = data.tags
+        local before = #tags
+        for _, r in ipairs(renames) do
+            local at = find(tags, r.old_id)
+            if not at then error("NAME_TEST: no " .. label .. " text for " .. r.name) end
+            local text = string.format(r.format, tostring(tags[at].text)) .. suffix
+            local hit, pos = find(tags, r.id)
+            if hit then error("NAME_TEST: new text id already used: " .. r.id) end
+            table.insert(tags, pos, tags[at])
+            tags[pos].id.value = r.id
+            tags[pos].text = text
+            log(string.format("NAME_TEST: %s text %d at %d: %s", label, r.id, pos, text))
+        end
+        local out = buffer.create(ref.hash.size + 4096)
+        out:write_resource(LOCA_DATA, data)
+        local c = game.assets.create_content(out)
+        log(string.format("NAME_TEST: %s %d -> %d texts, %d -> %d bytes", label, before, #tags, ref.hash.size, c.size))
+        ref.hash.size, ref.hash.hash0, ref.hash.hash1, ref.hash.hash2 = c.size, c.hash0, c.hash1, c.hash2
+    end
+
+    local coll = single("keen::LocaTagCollectionResource").data
+    for _, l in ipairs(coll.languages) do
+        if l.language == "En_Us" then patch_table(l.data, "En_Us", "") end
+    end
+    patch_table(coll.keenglishData, "keenglish", " (k)")
+    for _, r in ipairs(renames) do
+        r.info.name = r.guid
+        log("NAME_TEST: renamed " .. r.name)
     end
 end
 
