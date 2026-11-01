@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.10 (test worlds only; NAME_TEST on).
+-- Perk Variants prototype 0.7.0 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -16,6 +16,8 @@
 --   - ItemKnowledgeResource (StaticHashMap ItemId -> ItemKnowledge)
 --   - GameKnowledgeResource world/player knowledge maps (an item's ItemId is
 --     also its KnowledgeId)
+--   - Name "§ <original name>" in every language: new texts added to the text
+--     tables (see "Variant marker").
 --
 -- Loot rule:
 --   - Random loot: each variant's loot entry carries the original's labels with
@@ -1087,86 +1089,161 @@ do
 end
 
 ---------------------------------------------------------------------------
--- TEST (research for a variant marker, remove afterwards). 0.6.7/0.6.8: tooltips
--- ignore ItemInfo.caption, and the "Lore Item" line is hardcoded for the lore tag
--- (its registry label is the empty GUID; other tags' labels never show). So:
--- can the mod add texts of its own and give an item a new name?
--- Names are LocaTagReferences: GUID -> game.guid.hash -> LocaTagId, looked up
--- in LocaTagCollectionResourceData.tags (sorted by id) of a content blob. The
--- test decodes the blob, inserts new texts in id order, re-encodes it as new
--- content and points the collection at it.
--- 0.6.9 (tested): "• name" and "<img vanity> name" show in the title,
--- <lorename> has no effect there, and the game displays languages[En_Us], not
--- keenglishData. 0.6.10: glyph samplers, to see which symbols the title font
--- draws (5 candidates per shield, then the name).
+-- Variant marker: variants are named "§ <original name>" in every language.
+--
+-- A name is a LocaTagReference: a GUID whose game.guid.hash is a LocaTagId,
+-- looked up in LocaTagCollectionResourceData.tags (sorted by id) of the
+-- language's content blob. Each table is decoded (Buffer:read_resource), gets
+-- one new text per item with variants (its variants share it), is re-encoded
+-- and stored as new content that the collection then points at.
+-- Research (0.6.7-0.6.10): no data field shows an extra tooltip line (captions
+-- are ignored; the "Lore Item" line is hardcoded for the lore tag); new texts
+-- show; "§" is the one candidate symbol the title font drew.
+-- The marker is cosmetic, so it fails soft: all tables are prepared first, and
+-- variants are renamed only if every table was committed; otherwise they keep
+-- the original's name.
 ---------------------------------------------------------------------------
 
-local NAME_TEST = true
-if NAME_TEST then
-    local LOCA_DATA = "keen::LocaTagCollectionResourceData"
-    local FORMATS = {
-        Shield_T5_DPS = "◆★✦❖♦ %s",
-        Shield_T5_Rogue = "✧◈⬥†‡ %s",
-        Shield_T5_Tank = "§※⚜✠✪ %s",
-    }
-    local renames = {} -- { info, name, guid, id, format }
-    for _, original in ipairs(item_order) do
-        local name = items[original].name
-        if FORMATS[name] then
-            local info = game.assets.get_resource(original, "keen::ItemInfo").data
-            local guid = derive_guid("perk-variants/name-test/" .. name)
-            renames[#renames + 1] = { info = info, name = name, old_id = game.guid.hash(tostring(info.name)),
-                guid = guid, id = game.guid.hash(guid), format = FORMATS[name] }
+local MARKER = "§ "
+local LOCA_DATA = "keen::LocaTagCollectionResourceData"
+
+local function content_of(hash)
+    local ok, c = pcall(game.assets.get_content, hash)
+    if ok and c then return c end
+    return game.assets.get_content(game.guid.from_content_hash(hash))
+end
+
+-- Text ids in table order, read from text (no live references). LocaTagArgument
+-- ids are plain numbers, so the pattern only matches LocaTagResource entries.
+local function text_ids(data)
+    local ids = {}
+    for id in tostring(data):gmatch('{"id":{"value":(%d+)}') do ids[#ids + 1] = tonumber(id) end
+    return ids
+end
+
+local function check_ids(ids, expected, label)
+    if #ids ~= expected then error(string.format("%s: parsed %d text ids, table has %d", label, #ids, expected)) end
+    for i = 2, #ids do
+        if ids[i - 1] >= ids[i] then error(label .. ": text ids not ascending at " .. i) end
+    end
+end
+
+-- Index of id in the sorted ids, or nil and the insert position.
+local function find_sorted(ids, id)
+    local lo, hi = 1, #ids
+    while lo <= hi do
+        local mid = (lo + hi) // 2
+        if ids[mid] == id then return mid end
+        if ids[mid] < id then lo = mid + 1 else hi = mid - 1 end
+    end
+    return nil, lo
+end
+
+local marks = {} -- one per item with variants: { original, old_id, guid, id }
+for _, original in ipairs(item_order) do
+    local _, first = next(variants_of[original] or {})
+    if first then
+        local name = tostring(game.assets.get_resource(first.guid, "keen::ItemInfo").data.name)
+        if name ~= NONE then
+            local guid = derive_guid(SEED .. "|name|" .. original)
+            marks[#marks + 1] = { original = original, old_id = game.guid.hash(name), guid = guid, id = game.guid.hash(guid) }
         end
     end
+end
 
-    local function content_of(hash)
-        local ok, c = pcall(game.assets.get_content, hash)
-        if ok and c then return c end
-        return game.assets.get_content(game.guid.from_content_hash(hash))
-    end
-
-    -- Returns the index of id in the sorted tags array, or nil and the insert position.
-    local function find(tags, id)
-        local lo, hi = 1, #tags
-        while lo <= hi do
-            local mid = (lo + hi) // 2
-            local v = tags[mid].id.value
-            if v == id then return mid end
-            if v < id then lo = mid + 1 else hi = mid - 1 end
+-- Decodes one table, inserts the marked names, re-encodes it into a buffer.
+-- `english` (old_id -> text) fills names a language lacks; nil for En_Us itself,
+-- where a missing name drops the mark (those variants keep the original name).
+local function prepare_table(ref, label, english)
+    local data = content_of(ref.hash):read_data():read_resource(LOCA_DATA)
+    local tags = data.tags
+    local before = #tags
+    local ids = text_ids(data)
+    check_ids(ids, before, label)
+    local adds, texts, template, missing = {}, {}, nil, 0
+    for _, m in ipairs(marks) do
+        if not m.skip then
+            local at = find_sorted(ids, m.old_id)
+            local hit, pos = find_sorted(ids, m.id)
+            if hit then error(label .. ": text id " .. m.id .. " already used") end
+            local text = at and tostring(tags[at].text)
+            if at then
+                template = template or at
+            elseif english then
+                text = english[m.old_id]
+                missing = missing + 1
+            else
+                m.skip = true
+            end
+            if text then
+                texts[m.old_id] = text
+                adds[#adds + 1] = { pos = pos, at = at, id = m.id, text = MARKER .. text }
+            end
         end
-        return nil, lo
     end
-
-    local function patch_table(ref, label, suffix)
-        local data = content_of(ref.hash):read_data():read_resource(LOCA_DATA)
-        local tags = data.tags
-        local before = #tags
-        for _, r in ipairs(renames) do
-            local at = find(tags, r.old_id)
-            if not at then error("NAME_TEST: no " .. label .. " text for " .. r.name) end
-            local text = string.format(r.format, tostring(tags[at].text)) .. suffix
-            local hit, pos = find(tags, r.id)
-            if hit then error("NAME_TEST: new text id already used: " .. r.id) end
-            table.insert(tags, pos, tags[at])
-            tags[pos].id.value = r.id
-            tags[pos].text = text
-            log(string.format("NAME_TEST: %s text %d at %d: %s", label, r.id, pos, text))
+    if #adds > 0 and not template then error(label .. ": none of the names exist") end
+    -- Insert from the highest position down so lower positions stay valid; the
+    -- entry cloned for a new text is the original name's entry (no arguments),
+    -- shifted by the insertions already made at or below it.
+    table.sort(adds, function(a, b)
+        if a.pos ~= b.pos then return a.pos > b.pos end
+        return a.id > b.id
+    end)
+    local done = {}
+    for _, a in ipairs(adds) do
+        local src = a.at or template
+        local shift = 0
+        for _, p in ipairs(done) do
+            if p <= src then shift = shift + 1 end
         end
-        local out = buffer.create(ref.hash.size + 4096)
-        out:write_resource(LOCA_DATA, data)
-        local c = game.assets.create_content(out)
-        log(string.format("NAME_TEST: %s %d -> %d texts, %d -> %d bytes", label, before, #tags, ref.hash.size, c.size))
-        ref.hash.size, ref.hash.hash0, ref.hash.hash1, ref.hash.hash2 = c.size, c.hash0, c.hash1, c.hash2
+        table.insert(tags, a.pos, tags[src + shift])
+        tags[a.pos].id.value = a.id
+        tags[a.pos].text = a.text
+        done[#done + 1] = a.pos
     end
+    check_ids(text_ids(data), before + #adds, label .. " (after)")
+    local out = buffer.create(ref.hash.size + 256 * #adds + 4096)
+    out:write_resource(LOCA_DATA, data)
+    return { ref = ref, out = out, label = label, before = before, after = before + #adds, missing = missing }, texts
+end
 
-    local coll = single("keen::LocaTagCollectionResource").data
-    for _, l in ipairs(coll.languages) do
-        if l.language == "En_Us" then patch_table(l.data, "En_Us", "") end
-    end
-    for _, r in ipairs(renames) do
-        r.info.name = r.guid
-        log("NAME_TEST: renamed " .. r.name)
+do
+    local clock = (os and os.clock) or function() return 0 end
+    local started = clock()
+    local ok, err = pcall(function()
+        local coll = single("keen::LocaTagCollectionResource").data
+        local tables, english = {}, nil
+        for _, l in ipairs(coll.languages) do
+            if l.language == "En_Us" then tables[1], english = prepare_table(l.data, "En_Us", nil) end
+        end
+        if not english then error("no En_Us text table") end
+        for _, l in ipairs(coll.languages) do
+            if l.language ~= "En_Us" then tables[#tables + 1] = prepare_table(l.data, tostring(l.language), english) end
+        end
+        tables[#tables + 1] = prepare_table(coll.keenglishData, "keenglish", english)
+        for _, t in ipairs(tables) do
+            local c = game.assets.create_content(t.out)
+            local before_bytes = t.ref.hash.size
+            t.ref.hash.size, t.ref.hash.hash0, t.ref.hash.hash1, t.ref.hash.hash2 = c.size, c.hash0, c.hash1, c.hash2
+            log(string.format("marker: %s %d -> %d texts, %d -> %d bytes%s", t.label, t.before, t.after,
+                before_bytes, c.size, t.missing > 0 and (", " .. t.missing .. " names from English") or ""))
+        end
+    end)
+    if ok then
+        local renamed, items_marked = 0, 0
+        for _, m in ipairs(marks) do
+            if not m.skip then
+                items_marked = items_marked + 1
+                for _, v in pairs(variants_of[m.original]) do
+                    game.assets.get_resource(v.guid, "keen::ItemInfo").data.name = m.guid
+                    renamed = renamed + 1
+                end
+            end
+        end
+        log(string.format("marker: %d variants of %d items renamed \"%s<name>\" (%d items without a name text), %.1fs",
+            renamed, items_marked, MARKER, #marks - items_marked, clock() - started))
+    else
+        log("WARNING marker skipped, variants keep the original names: " .. tostring(err))
     end
 end
 
