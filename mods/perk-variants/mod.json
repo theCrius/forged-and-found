@@ -1,7 +1,7 @@
 {
   "id": "perk-variants",
   "name": "Perk Variants (prototype)",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "PROTOTYPE, test worlds only. Adds up to 8 variants with rerolled enhancements for every item with perks; preset inventories (fixed chests) drop one of the 8, random loot one of the first 4, instead of the vanilla item. Vanilla items and recipes unchanged.",
   "authors": ["Crius"],
   "dependencies": [],

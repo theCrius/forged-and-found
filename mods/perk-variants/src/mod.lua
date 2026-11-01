@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.7.1 (test worlds only; marker off for a crash test).
+-- Perk Variants prototype 0.7.2 (test worlds only; 4 random-loot variants per item for a crash test).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -72,7 +72,11 @@ local ROLL_SEED = "perk-variants/rolls-v1" -- rolls of items not in the pinned l
 local MAX_VARIANTS = 6
 -- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
 -- the rest drop from presets only.
-local RANDOM_LOOT_VARIANTS = MAX_VARIANTS
+-- TEST 0.7.2: opening chests crashed with 6 ("No allocator set in BaseDynamicArray",
+-- 0.7.0 and 0.7.1). Hypothesis: a per-label candidate list has a fixed capacity
+-- (4096?). Entries per loot label, busiest label: vanilla 779, 4 per item 3194
+-- (0.2.10 used 4 per item and chests worked: 3201), 6 per item 4420.
+local RANDOM_LOOT_VARIANTS = 4
 -- TEST switch: preset entries that always spawn drop the original AND a variant,
 -- so both can be compared side by side. false = normal behaviour (variant only).
 local PAIR_TEST = false
@@ -1207,9 +1211,9 @@ local function prepare_table(ref, label, english)
     return { ref = ref, out = out, label = label, before = before, after = before + #adds, missing = missing }, texts
 end
 
--- TEST 0.7.1: off, to see whether the chest crash of 0.7.0 (assert "No allocator
--- set in BaseDynamicArray" on opening a chest) comes from the marker.
-local MARKER_ENABLED = false
+-- 0.7.1 (marker off) crashed on a chest too, so the marker is not the cause.
+-- Beta-only feature (see CLAUDE.md); a flag file will switch it.
+local MARKER_ENABLED = true
 
 if not MARKER_ENABLED then
     log("marker disabled")
