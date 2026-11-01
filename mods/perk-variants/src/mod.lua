@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.7.0 (test worlds only).
+-- Perk Variants prototype 0.7.1 (test worlds only; marker off for a crash test).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -1207,9 +1207,13 @@ local function prepare_table(ref, label, english)
     return { ref = ref, out = out, label = label, before = before, after = before + #adds, missing = missing }, texts
 end
 
-do
-    local clock = (os and os.clock) or function() return 0 end
-    local started = clock()
+-- TEST 0.7.1: off, to see whether the chest crash of 0.7.0 (assert "No allocator
+-- set in BaseDynamicArray" on opening a chest) comes from the marker.
+local MARKER_ENABLED = false
+
+if not MARKER_ENABLED then
+    log("marker disabled")
+else
     local ok, err = pcall(function()
         local coll = single("keen::LocaTagCollectionResource").data
         local tables, english = {}, nil
@@ -1240,8 +1244,9 @@ do
                 end
             end
         end
-        log(string.format("marker: %d variants of %d items renamed \"%s<name>\" (%d items without a name text), %.1fs",
-            renamed, items_marked, MARKER, #marks - items_marked, clock() - started))
+        -- (os.clock is not available in EML: time this from the log timestamps)
+        log(string.format("marker: %d variants of %d items renamed \"%s<name>\" (%d items without a name text)",
+            renamed, items_marked, MARKER, #marks - items_marked))
     else
         log("WARNING marker skipped, variants keep the original names: " .. tostring(err))
     end
