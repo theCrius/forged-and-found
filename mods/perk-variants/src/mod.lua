@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.7.2 (test worlds only; 5 random-loot variants per item for a crash test).
+-- Perk Variants prototype 0.8.0 (test worlds only; first run under ShroudForge, random loot vanilla).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -17,10 +17,12 @@
 --   - GameKnowledgeResource world/player knowledge maps (an item's ItemId is
 --     also its KnowledgeId)
 --   - Name "§ <original name>" in every language: new texts added to the text
---     tables (see "Variant marker").
+--     tables (see "Variant marker"). Beta only: needs the flag file marker.enabled.
 --
 -- Loot rule:
---   - Random loot: each variant's loot entry carries the original's labels with
+--   - Random loot (RANDOM_LOOT_VARIANTS = 0, current): untouched. Variant entries
+--     carry no labels, so they never enter the 1024-entry candidate list.
+--   - Random loot (RANDOM_LOOT_VARIANTS > 0, crashes): each variant's loot entry carries the original's labels with
 --     the top labeled level's weights divided by the variant count. Items whose
 --     rarity is rolled at drop: variant entries allow only Epic/Legendary and
 --     the original keeps Common/Uncommon/Rare (both UNVERIFIED, see the loot
@@ -72,12 +74,13 @@ local ROLL_SEED = "perk-variants/rolls-v1" -- rolls of items not in the pinned l
 local MAX_VARIANTS = 6
 -- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
 -- the rest drop from presets only.
--- TEST 0.7.2: opening chests crashed with 6 ("No allocator set in BaseDynamicArray",
--- 0.7.0 and 0.7.1). Hypothesis: a per-label candidate list has a fixed capacity
--- (4096?). Entries per loot label, busiest label: vanilla 779, 4 per item 3194
--- (0.2.10 used 4 per item and chests worked: 3201), 5 per item 3807, 6 per
--- item 4420. Developer: try 5 first, fall back to 4 if it still crashes.
-local RANDOM_LOOT_VARIANTS = 5
+-- 0 = random loot stays vanilla: variants get no labels and originals keep their
+-- entries unchanged. The random-loot picker collects a rolled label's equipment
+-- entries into a fixed 1024-entry list (research/loot-candidate-cap.md); vanilla's
+-- busiest label already holds 609, so even 1 variant entry per item overflows 20
+-- labels and crashes (0.7.0-0.7.2). Variants are meant to come from a native
+-- post-draw swap instead (planned), and from presets until then.
+local RANDOM_LOOT_VARIANTS = 0
 -- TEST switch: preset entries that always spawn drop the original AND a variant,
 -- so both can be compared side by side. false = normal behaviour (variant only).
 local PAIR_TEST = false
@@ -1212,12 +1215,14 @@ local function prepare_table(ref, label, english)
     return { ref = ref, out = out, label = label, before = before, after = before + #adds, missing = missing }, texts
 end
 
--- 0.7.1 (marker off) crashed on a chest too, so the marker is not the cause.
--- Beta-only feature (see CLAUDE.md); a flag file will switch it.
-local MARKER_ENABLED = true
+-- Beta-only feature (see CLAUDE.md): on only when the beta package ships the flag
+-- file `marker.enabled` in the mod folder. create_content writes into the game's
+-- archives, which have to be emptied by hand after uninstalling.
+local MARKER_FLAG = "marker.enabled"
+local MARKER_ENABLED = io.exists(MARKER_FLAG)
 
 if not MARKER_ENABLED then
-    log("marker disabled")
+    log("marker disabled (no " .. MARKER_FLAG .. " in the mod folder)")
 else
     local ok, err = pcall(function()
         local coll = single("keen::LocaTagCollectionResource").data
@@ -1321,7 +1326,8 @@ do
             if not i then error("perk-variants: no loot entry for " .. info.name) end
             local original_entry = loot.items[i]
             local labels = original_entry.labelGroups
-            local random_drop = #labels.labels > 0 or #labels.childGroups > 0
+            local has_labels = #labels.labels > 0 or #labels.childGroups > 0
+            local random_drop = has_labels and RANDOM_LOOT_VARIANTS > 0
             local labeled = math.min(#list, RANDOM_LOOT_VARIANTS)
             local mask = mask_of(original_entry)
             local low, high = keep(mask, LOW), keep(mask, HIGH)
@@ -1336,6 +1342,8 @@ do
                     first = #loot.items
                     if random_drop then scale_label_weights(entry.labelGroups, labeled) end
                     if info.gen and #high > 0 then entry.rarities = high end
+                    -- Random loot off: variant 1 (and its clones) carries no labels.
+                    if has_labels and not random_drop then entry.labelGroups = { labels = {}, childGroups = {} } end
                 elseif k > labeled and random_drop then
                     entry.labelGroups = { labels = {}, childGroups = {} } -- presets only
                 end
