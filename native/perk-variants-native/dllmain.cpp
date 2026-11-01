@@ -41,12 +41,15 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.4.2";
+constexpr const char* kVersion = "0.4.3";
 
-// Callers (return addresses) whose 8th argument is proven to be the item's rarity:
-// +0x3C0C7B chest/enemy-remains picker (Sleek Daggers, Shivs: Epic as in the tooltip),
-// +0x3F9E2F enemy loot (Scrap Shield: Rare as in the tooltip).
-constexpr uintptr_t kSwapCallers[] = {0x3C0C7B, 0x3F9E2F};
+// The only caller (return address) whose loot is swapped: +0x3C0C7B, the random part of
+// the container picker (chests, enemy remains, boss loot; 8th argument proven to be the
+// rarity: Sleek Daggers, Shivs, Epic as in the tooltip). Never swapped, by the
+// developer's design (2026-11-01): the picker's fixed items (+0x3C089D), world pickups
+// and interactions (+0x3FD556), and direct enemy drops (+0x3F9E2F: carcasses, harvest,
+// the gear an enemy carries).
+constexpr uintptr_t kSwapCallers[] = {0x3C0C7B};
 // The crafting UI's simulated adds (~3700 calls/s, main thread): never swapped or logged.
 constexpr uintptr_t kCraftingUiCaller = 0x3F2258;
 constexpr uint8_t kEpic = 3, kLegendary = 4;
@@ -222,7 +225,7 @@ uint64_t roll_item(uint64_t item_id, uint64_t rarity_ptr, uintptr_t caller, cons
     bool has_ra = read_u8(reinterpret_cast<const uint8_t*>(rarity_ptr), &ra);
     char text[256];
     if (!is_swap_caller(caller)) {
-        snprintf(text, sizeof text, "not swapped (unverified caller +0x%llX): item=%u rarity byte=%s%u",
+        snprintf(text, sizeof text, "not swapped (caller +0x%llX is not random container loot): item=%u rarity byte=%s%u",
                  static_cast<unsigned long long>(caller), item, has_ra ? "" : "?", ra);
         log_line(text);
         return item_id;

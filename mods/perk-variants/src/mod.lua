@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.9.4 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
+-- Perk Variants prototype 0.9.5 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -24,10 +24,11 @@
 -- carry no labels, so random loot never picks them (adding them overflowed the
 -- picker's 1024-entry candidate list, research/loot-candidate-cap.md). Variants
 -- reach players only through the native DLL: after the game has picked an item
--- and its rarity in random loot (chests, enemy remains, enemy drops), an Epic or
--- Legendary item with variants is rolled among {vanilla, its variants}. Fixed
--- chest contents, world pickups and anything obtained by interacting with an
--- object are never swapped: a specific item placed there is intended.
+-- and its rarity in random container loot (chests, enemy remains, boss loot), an
+-- Epic or Legendary item with variants is rolled among {vanilla, its variants}.
+-- Fixed chest contents, world pickups, anything obtained by interacting with an
+-- object, and direct enemy drops (carcasses, harvest, an enemy's own gear) are
+-- never swapped: a specific item placed there is intended.
 --
 -- Determinism: variant GUIDs derive only from the original GUID, the variant
 -- index and SEED (ItemId = game.guid.hash(GUID)), so variant k of an item has
