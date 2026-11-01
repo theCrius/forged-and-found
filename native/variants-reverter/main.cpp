@@ -30,7 +30,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.1.0";
+constexpr const char* kVersion = "0.2.0";
 
 using Bytes = std::vector<uint8_t>;
 
@@ -203,8 +203,16 @@ int main(int argc, char** argv) {
     if (!parse(c)) return 1;
     std::printf("%s: %zu bytes, %zu chunks, all checksums valid\n", in.c_str(), c.data.size(), c.entries.size());
 
-    // Chunks whose variant ids are converted, and chunks where they are left alone.
+    // Chunks whose item records are converted, with the content version they were decoded
+    // from: the character's own items, and world entities (storage chests, pedestals and
+    // mannequins are inventories of entities in entity_chunkNN). Knowledge chunks are left
+    // alone: the game drops unknown ids from them on its next save (tested 2026-11-01).
     const std::set<std::string> knowledge = {"player_knowledge", "world_knowledge"};
+    auto convertible = [](const std::string& name, uint32_t& version) {
+        if (name == "player_character") { version = 5; return true; }
+        if (name.rfind("entity_chunk", 0) == 0) { version = 21; return true; }
+        return false;
+    };
     std::map<size_t, Bytes> rewritten;  // entry index -> new stored chunk bytes
     int converted = 0, blocked = 0;
     for (size_t i = 0; i < c.entries.size(); ++i) {
@@ -217,14 +225,25 @@ int main(int argc, char** argv) {
             std::printf("  %-22s %zu variant id(s) in knowledge: left as is\n", e.name.c_str(), hits.size());
             continue;
         }
-        if (e.name != "player_character") {
-            std::printf("  %-22s %zu variant id(s) in a chunk this version cannot convert yet\n", e.name.c_str(), hits.size());
-            blocked += static_cast<int>(hits.size());
+        uint32_t expected = 0;
+        if (!convertible(e.name, expected)) {
+            // Elsewhere a variant id is only a coincidence if it cannot be read as an item
+            // record (e.g. 576628404 inside base03's terrain data, present before the mod).
+            for (size_t at : hits) {
+                Record r;
+                if (record_at(body, at, r)) {
+                    std::printf("  %-22s variant %u at 0x%zX looks like an item record in a chunk this version does not convert\n",
+                                e.name.c_str(), rd32(&body[at]), at);
+                    ++blocked;
+                } else {
+                    std::printf("  %-22s value at 0x%zX equals a variant id but is not an item record: left as is\n", e.name.c_str(), at);
+                }
+            }
             continue;
         }
         uint32_t content_version = rd32(&c.data[e.offset + 10]);
-        if (content_version != 5) {
-            std::printf("  %-22s content version %u was never seen (expected 5): not converting\n", e.name.c_str(), content_version);
+        if (content_version != expected) {
+            std::printf("  %-22s content version %u was never seen (expected %u): not converting\n", e.name.c_str(), content_version, expected);
             blocked += static_cast<int>(hits.size());
             continue;
         }
@@ -284,7 +303,8 @@ int main(int argc, char** argv) {
     v.data = o;
     if (!parse(v)) { std::fprintf(stderr, "error: the converted file failed its own check, nothing written\n"); return 1; }
     for (size_t i = 0; i < v.entries.size(); ++i) {
-        if (v.entries[i].name != "player_character") continue;
+        uint32_t expected = 0;
+        if (!convertible(v.entries[i].name, expected)) continue;
         Bytes body;
         if (!payload(v, v.entries[i], body)) return 1;
         for (size_t at : find_ids(body, map)) {
