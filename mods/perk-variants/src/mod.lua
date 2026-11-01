@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.9 (test worlds only; NAME_TEST on).
+-- Perk Variants prototype 0.6.10 (test worlds only; NAME_TEST on).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -1094,19 +1094,20 @@ end
 -- Names are LocaTagReferences: GUID -> game.guid.hash -> LocaTagId, looked up
 -- in LocaTagCollectionResourceData.tags (sorted by id) of a content blob. The
 -- test decodes the blob, inserts new texts in id order, re-encodes it as new
--- content and points the collection at it. Both English tables are patched
--- (En_Us and keenglishData) with a different suffix to see which one is shown.
--- T5 crafted shields: DPS "• name", Rogue "<img vanity> name", Tank in
--- <lorename> style.
+-- content and points the collection at it.
+-- 0.6.9 (tested): "• name" and "<img vanity> name" show in the title,
+-- <lorename> has no effect there, and the game displays languages[En_Us], not
+-- keenglishData. 0.6.10: glyph samplers, to see which symbols the title font
+-- draws (5 candidates per shield, then the name).
 ---------------------------------------------------------------------------
 
 local NAME_TEST = true
 if NAME_TEST then
     local LOCA_DATA = "keen::LocaTagCollectionResourceData"
     local FORMATS = {
-        Shield_T5_DPS = "• %s",
-        Shield_T5_Rogue = "<img vanity> %s",
-        Shield_T5_Tank = "<lorename>%s</lorename>",
+        Shield_T5_DPS = "◆★✦❖♦ %s",
+        Shield_T5_Rogue = "✧◈⬥†‡ %s",
+        Shield_T5_Tank = "§※⚜✠✪ %s",
     }
     local renames = {} -- { info, name, guid, id, format }
     for _, original in ipairs(item_order) do
@@ -1163,7 +1164,6 @@ if NAME_TEST then
     for _, l in ipairs(coll.languages) do
         if l.language == "En_Us" then patch_table(l.data, "En_Us", "") end
     end
-    patch_table(coll.keenglishData, "keenglish", " (k)")
     for _, r in ipairs(renames) do
         r.info.name = r.guid
         log("NAME_TEST: renamed " .. r.name)
