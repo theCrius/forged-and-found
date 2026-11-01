@@ -1,0 +1,108 @@
+# Forged & Found
+
+An Enshrouded mod for [ShroudForge](https://github.com/bonsaibauer/shroudforge) that makes
+looted and crafted equipment more interesting. It has three features. Each one is a
+separate switch in the mod's ShroudForge settings, and all three start **off**.
+
+> **Prototype.** Use it in test worlds and back up your saves before trying it.
+
+## Features
+
+### Variant drops
+Every item that can drop as Epic or Legendary gets six **variants**: the same item with a
+different set of enhancements (the right-hand "Enhancements" column of its upgrade rows).
+Variants follow themes (sustain, empower, elemental, physical, crit, character skills),
+some mix skills from a second class, and a Legendary variant always ends with a +2
+character skill.
+
+When an Epic or Legendary item drops from a **random** chest, enemy remains or boss loot,
+it rolls among the vanilla item and its six variants. Fixed chest contents, items you pick
+up in the world or get by interacting with objects (including lore items), and the gear an
+enemy carries are never changed.
+
+Turning the switch off only stops new variants from dropping. Variants you already own
+stay variants and keep working while the mod is installed.
+
+### Crafted equipment rarity by level
+Armor, shields and weapons crafted at the artisans get their rarity from their item level:
+up to 5 Common, up to 10 Uncommon, up to 15 Rare, above that Epic (already Legendary items
+stay Legendary). Each rarity step up or down changes the crafting cost by 25%.
+
+### Crafted lore items
+Copies of lore items crafted at the artisans become Legendary (crafting cost +50%) and are
+raised to the item level of the crafted armor of their tier, also in the crafting preview.
+
+Items crafted before you switch a crafting feature on or off keep the rarity they were
+crafted with.
+
+## Requirements
+
+- Enshrouded on Windows, game build 1273043 (the native part only activates on the game
+  builds it was written for; on any other build it stays inactive and logs why).
+- ShroudForge 1.7.7 or newer.
+- Multiplayer: the mod also runs on a dedicated server that has ShroudForge. **Every player
+  on that server needs the mod too**: a player without it cannot see variant items and loses
+  them. On a server, the server's settings decide what drops and what is crafted.
+
+## Install
+
+1. Download `forged-and-found-<version>.zip` from the [releases](../../releases).
+2. Copy its `forged-and-found` folder into `<game>/mods/` (next to `enshrouded.exe`).
+3. Start the game, open the ShroudForge mod list and switch on the features you want.
+   Changing a switch needs a restart.
+
+Updating replaces the mod folder, which resets the switches to off.
+
+## Removing the mod
+
+Switching the mod off in ShroudForge (or deleting it) makes the game **delete every variant
+item** the next time a character or world is loaded, because the game no longer knows them.
+To keep them, convert them back into their vanilla items first with `variants-reverter.exe`
+(in the release zip):
+
+1. Switch the mod off or delete it. Do not start the game yet.
+2. Back up your save folder. Characters and local worlds are in
+   `<Steam>\userdata\<your Steam id>\1203620\remote\` (`character*.ksd`, `world*.ksd`); a
+   dedicated server keeps its world in its `savegame` folder.
+3. For each save file, check what would change, then write a converted copy:
+   ```
+   variants-reverter.exe character0.ksd
+   variants-reverter.exe character0.ksd --out character0.converted.ksd
+   ```
+4. Replace the original file with the converted copy (keep your backup), then start the game.
+
+Converted items keep their level, rarity and durability and get their vanilla
+enhancements. The tool never modifies its input file, checks every file the way the game
+does, and refuses to write anything it cannot convert safely.
+
+## Building from source
+
+Needs Windows, PowerShell 7 and the Visual Studio 2022 Build Tools (C++ workload).
+
+```powershell
+./tools/package.ps1     # builds everything and writes dist/forged-and-found-<version>.zip
+```
+
+Or separately: `native/build.ps1` (the mod's DLL, copied into `mods/forged-and-found/bin/`)
+and `native/build-reverter.ps1` (`native/build/reverter-Release/variants-reverter.exe`).
+
+Pushing a tag `v<version>` matching `mods/forged-and-found/mod.json` builds the zip on
+GitHub Actions and publishes it as a release.
+
+| Path | Contents |
+|---|---|
+| `mods/forged-and-found/` | The ShroudForge package: `src/mod.lua` (variants, registrations, crafting changes), `data/pinned.txt` (the fixed enhancement rolls of every variant), settings in `extended.mod.json` |
+| `native/forged-and-found-native/` | The DLL that swaps random Epic/Legendary loot for variants and renders the optional "§" test marker |
+| `native/variants-reverter/` | The save converter and its variant map |
+| `native/third_party/zstd/` | zstd decoder (BSD license) used by the reverter |
+| `tools/` | Packaging and the variant-map generator |
+
+Variant item ids are derived from a fixed seed and the pinned list, so they stay the same
+across versions, machines and game updates. Never change the seeds in `mod.lua` or remove
+lines from `data/pinned.txt`: existing variant items would be lost.
+
+## License
+
+GPL-3.0, see [LICENSE](LICENSE). Bundled third-party code: zstd (BSD license, Meta
+Platforms, `native/third_party/zstd/LICENSE`); the XXH3 checksum in the reverter is ported
+from xxHash (BSD-2-Clause, Yann Collet). Built for ShroudForge (MIT, bonsaibauer).
