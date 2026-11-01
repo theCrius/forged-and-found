@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.2.0";
+constexpr const char* kVersion = "0.2.1";
 
 // Build 1273043 client, enshrouded.exe SHA-256 d64966e2... (ShroudForge profile 26082781).
 constexpr DWORD kTimeDateStamp = 0x6AD77F0C;
@@ -38,8 +38,12 @@ constexpr unsigned char kCreateItemPrologue[15] = {
     0x48, 0x89, 0x54, 0x24, 0x10,  // mov [rsp+10h], rdx
     0x48, 0x89, 0x4C, 0x24, 0x08,  // mov [rsp+8], rcx
 };
-using CreateItemFn = void* (*)(void*, void*, uint64_t, uint64_t, uint32_t item_id, uint16_t count,
-                               uint32_t* level, uint8_t* rarity, void*);
+// Every argument is forwarded as a raw 64-bit slot and only interpreted for logging:
+// 0.2.0 declared `count` as uint16_t, MSVC then wrote only 16 bits into the 8-byte
+// stack slot, and the game reads 32 (`mov esi,[rbp+108h]`): counts got garbage high
+// bits (chests full of 1000-stacks, "backpack full" everywhere).
+using CreateItemFn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t item_id, uint64_t count,
+                                  uint64_t level_ptr, uint64_t rarity_ptr, uint64_t);
 
 wchar_t g_log_path[MAX_PATH];
 HANDLE g_log = INVALID_HANDLE_VALUE;
@@ -82,18 +86,19 @@ bool read_u8(const uint8_t* p, uint8_t* out) {
     __try { *out = *p; return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-void* create_item_hook(void* a1, void* a2, uint64_t a3, uint64_t a4, uint32_t item_id, uint16_t count,
-                       uint32_t* level, uint8_t* rarity, void* a9) {
+uint64_t create_item_hook(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t item_id, uint64_t count,
+                          uint64_t level_ptr, uint64_t rarity_ptr, uint64_t a9) {
     uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_image_base;
     uint32_t lv = 0;
     uint8_t ra = 0;
-    bool has_lv = read_u32(level, &lv), has_ra = read_u8(rarity, &ra);
+    bool has_lv = read_u32(reinterpret_cast<const uint32_t*>(level_ptr), &lv);
+    bool has_ra = read_u8(reinterpret_cast<const uint8_t*>(rarity_ptr), &ra);
     char text[256];
-    snprintf(text, sizeof text, "create item=%u count=%u level=%s%u rarity=%s%u caller=+0x%llX thread=%lu", item_id,
-             count, has_lv ? "" : "?", lv, has_ra ? "" : "?", ra, static_cast<unsigned long long>(caller),
-             GetCurrentThreadId());
+    snprintf(text, sizeof text, "create item=%u count=%u level=%s%u rarity=%s%u caller=+0x%llX thread=%lu",
+             static_cast<uint32_t>(item_id), static_cast<uint32_t>(count), has_lv ? "" : "?", lv, has_ra ? "" : "?",
+             ra, static_cast<unsigned long long>(caller), GetCurrentThreadId());
     log_line(text);
-    return g_create_item_original(a1, a2, a3, a4, item_id, count, level, rarity, a9);
+    return g_create_item_original(a1, a2, a3, a4, item_id, count, level_ptr, rarity_ptr, a9);
 }
 
 // Replaces the 15-byte prologue at `target` with `jmp [rip+0]; dq hook; nop` after
