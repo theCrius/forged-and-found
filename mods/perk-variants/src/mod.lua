@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.8.3 (test worlds only; ShroudForge, random loot vanilla, native DLL "hello", log via warn).
+-- Perk Variants prototype 0.8.4 (test worlds only; ShroudForge only, random loot vanilla, native DLL "hello").
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -46,7 +46,8 @@
 -- missing from that list are rolled (deterministically from SEED and the
 -- current perk pools) and exported for the next release.
 --
--- EML notes:
+-- Loader notes (ShroudForge's asset API, whose value engine is a fork of EML's;
+-- see shroudforge/modules/mod-runtime/lua/resource_values/):
 --   - resource.data is a cached live view; edits to it are tracked (dirty flags
 --     propagate up) and written when patches are applied. Do not reassign
 --     `resource.data = data` after editing: that clones the whole view again.
@@ -59,10 +60,11 @@
 --     existing elements and edit only the fields that change.
 --   - Arrays grow only via table.insert.
 
--- EML skips patching when nothing changed since the last launch and still runs
--- mods with patching disabled. The previous patch is still applied.
+-- ShroudForge runs this script with patch access in its pregame asset pass. In any
+-- other phase (e.g. the in-game runtime, which the export capability opts into)
+-- there is nothing to do: the patch from the asset pass is already in the files.
 if not loader.features.patch then
-    print("[perk-variants] patching skipped by loader (cached patch still applied)")
+    shroudforge.log.info("[perk-variants] no patch access in this phase, nothing to do")
     return
 end
 
@@ -112,13 +114,9 @@ local ELEMENTS = { "Fire", "Ice", "Lightning", "Poison", "Fog" }
 local NONE = game.guid.NONE
 local u32 = integer.u32
 
--- ShroudForge logs a mod's print() at DEBUG, below its default INFO level, and
--- warn() at WARN, so every line goes through warn() too. Under EML, print() reaches
--- its log; warn() may be missing from its sandbox, hence the guard.
-local function log(msg)
-    print("[perk-variants] " .. msg)
-    if warn then warn("[perk-variants] " .. msg) end
-end
+-- shroudforge.log.info logs at INFO, ShroudForge's default level (print() would be
+-- logged at DEBUG and dropped). Lines land in <game>/shroudforge/logs.
+local function log(msg) shroudforge.log.info("[perk-variants] " .. msg) end
 
 ---------------------------------------------------------------------------
 -- Deterministic helpers
@@ -1222,8 +1220,9 @@ local function prepare_table(ref, label, english)
 end
 
 -- Beta-only feature (see CLAUDE.md): on only when the beta package ships the flag
--- file `marker.enabled` in the mod folder. create_content writes into the game's
--- archives, which have to be emptied by hand after uninstalling.
+-- file `marker.enabled` in the mod folder. create_content writes a new data
+-- archive (enshrouded_055.dat under EML, which never removed it again). Whether
+-- ShroudForge cleans it up after uninstalling is UNVERIFIED: test before enabling.
 local MARKER_FLAG = "marker.enabled"
 local MARKER_ENABLED = io.exists(MARKER_FLAG)
 
@@ -1260,7 +1259,7 @@ else
                 end
             end
         end
-        -- (os.clock is not available in EML: time this from the log timestamps)
+        -- (the loader sandbox has no os library: time this from the log timestamps)
         log(string.format("marker: %d variants of %d items renamed \"%s<name>\" (%d items without a name text)",
             renamed, items_marked, MARKER, #marks - items_marked))
     else
