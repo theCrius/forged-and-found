@@ -4,8 +4,9 @@
 //
 // Save format (game build 1273043, research/save-format.md): an "SV2C" container of
 // "S2BH" chunks plus a directory whose per-chunk checksum is the low 32 bits of XXH3-64
-// over the chunk's stored bytes. Changed chunks are written uncompressed (the chunk
-// readers accept compression 0); every other chunk is copied byte for byte.
+// over the chunk's stored bytes. Changed chunks keep their compression flag (the chunk
+// readers do not all honour the compression flag, so a compressed chunk is rewritten as a
+// zstd frame of stored blocks); every other chunk is copied byte for byte.
 //
 // Usage: variants-reverter <save.ksd> [--map <variant-map.txt>] [--out <file>]
 // Without --out it only reports. The input file is never modified.
@@ -30,7 +31,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.2.0";
+constexpr const char* kVersion = "0.2.1";
 
 using Bytes = std::vector<uint8_t>;
 
@@ -109,6 +110,43 @@ bool payload(const Container& c, const Entry& e, Bytes& out) {
         if (ZSTD_getErrorCode(r) != ZSTD_error_dstSize_tooSmall || cap > (512u << 20)) return fail("chunk " + e.name + ": zstd error");
         cap *= 4;
     }
+}
+
+// A zstd frame that stores the data uncompressed (raw blocks), in the game's own frame
+// style: single segment with the content size in the header, no checksum, no dictionary
+// (descriptor 0x60 for 256..65791 bytes). Changed chunks keep their compression flag,
+// because not every reader honours it: the entity-chunk reader always decompresses
+// (a raw entity_chunk00 failed with "Unknown frame descriptor", 2026-11-01).
+Bytes zstd_store(const Bytes& data) {
+    Bytes f = {0x28, 0xB5, 0x2F, 0xFD};
+    size_t n = data.size();
+    if (n < 256) {
+        f.push_back(0x20);  // FCS flag 0 + single segment: 1-byte content size
+        f.push_back(static_cast<uint8_t>(n));
+    } else if (n <= 65535 + 256) {
+        f.push_back(0x60);  // FCS flag 1: 2-byte content size minus 256
+        uint16_t v = static_cast<uint16_t>(n - 256);
+        f.push_back(static_cast<uint8_t>(v));
+        f.push_back(static_cast<uint8_t>(v >> 8));
+    } else {
+        f.push_back(0xA0);  // FCS flag 2: 4-byte content size
+        uint8_t v[4];
+        wr32(v, static_cast<uint32_t>(n));
+        f.insert(f.end(), v, v + 4);
+    }
+    constexpr size_t kMaxBlock = 128 * 1024;
+    size_t pos = 0;
+    do {
+        size_t len = n - pos < kMaxBlock ? n - pos : kMaxBlock;
+        bool last = pos + len == n;
+        uint32_t hdr = (static_cast<uint32_t>(len) << 3) | (0u << 1) | (last ? 1u : 0u);  // block type 0 = raw
+        f.push_back(static_cast<uint8_t>(hdr));
+        f.push_back(static_cast<uint8_t>(hdr >> 8));
+        f.push_back(static_cast<uint8_t>(hdr >> 16));
+        f.insert(f.end(), data.begin() + pos, data.begin() + pos + len);
+        pos += len;
+    } while (pos < n);
+    return f;
 }
 
 // player_character item record: [u8 slot][u32 itemId][u16 count][u8 flags] + optional
@@ -264,9 +302,19 @@ int main(int argc, char** argv) {
             if (r.flags & 0x10) std::printf(", %s", rarity_name(r.rarity));
             std::printf(")\n");
         }
+        // Same chunk header (compression flag included); a compressed chunk gets a stored
+        // zstd frame, which must decode back to exactly the patched payload.
         Bytes chunk(c.data.begin() + e.offset, c.data.begin() + e.offset + 14);
-        chunk[9] = 0;  // stored raw
-        chunk.insert(chunk.end(), body.begin(), body.end());
+        if (chunk[9] == 1) {
+            Bytes frame = zstd_store(body);
+            Bytes check(body.size() + 1);
+            size_t r = ZSTD_decompress(check.data(), check.size(), frame.data(), frame.size());
+            if (ZSTD_isError(r) || r != body.size() || std::memcmp(check.data(), body.data(), r) != 0)
+                return fail("internal error: stored zstd frame does not decode to the patched chunk"), 1;
+            chunk.insert(chunk.end(), frame.begin(), frame.end());
+        } else {
+            chunk.insert(chunk.end(), body.begin(), body.end());
+        }
         rewritten[i] = std::move(chunk);
     }
     std::printf("%d item(s) to convert, %d variant id(s) blocked\n", converted, blocked);
