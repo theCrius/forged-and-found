@@ -114,10 +114,10 @@ local u32 = integer.u32
 
 -- ShroudForge logs a mod's print() at DEBUG, below its default INFO level, and
 -- warn() at WARN, so every line goes through warn() too. Under EML, print() reaches
--- its log and Lua's standard warn() stays silent (warnings are off by default).
+-- its log; warn() may be missing from its sandbox, hence the guard.
 local function log(msg)
     print("[perk-variants] " .. msg)
-    warn("[perk-variants] " .. msg)
+    if warn then warn("[perk-variants] " .. msg) end
 end
 
 ---------------------------------------------------------------------------
