@@ -1,7 +1,7 @@
-# Builds perk-variants-convert.exe (offline save converter) with the MSVC Build Tools.
+# Builds variants-reverter.exe (offline save converter) with the MSVC Build Tools.
 # zstd's decoder is compiled in from native/third_party/zstd (BSD); /MT links the CRT
 # statically, so the exe runs without a Visual C++ runtime.
-# Usage: ./native/build-convert.ps1 [-Config Release|Debug]
+# Usage: ./native/build-reverter.ps1 [-Config Release|Debug]
 param([ValidateSet('Release', 'Debug')][string]$Config = 'Release')
 $ErrorActionPreference = 'Stop'
 
@@ -11,11 +11,11 @@ if (-not $vs) { throw 'MSVC Build Tools not found (vswhere)' }
 $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
 $env:PATH = "$(Split-Path $vswhere);$env:PATH"
 
-$src = Join-Path $PSScriptRoot 'perk-variants-convert'
+$src = Join-Path $PSScriptRoot 'variants-reverter'
 $zstd = Join-Path $PSScriptRoot 'third_party\zstd'
-$obj = Join-Path $PSScriptRoot "build\convert-$Config"
+$obj = Join-Path $PSScriptRoot "build\reverter-$Config"
 New-Item -ItemType Directory -Force -Path $obj | Out-Null
-$exe = Join-Path $obj 'perk-variants-convert.exe'
+$exe = Join-Path $obj 'variants-reverter.exe'
 
 $opt = if ($Config -eq 'Release') { '/O2 /DNDEBUG' } else { '/Od /Zi' }
 $zsrc = @('common\debug.c', 'common\entropy_common.c', 'common\error_private.c', 'common\fse_decompress.c',

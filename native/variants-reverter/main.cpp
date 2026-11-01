@@ -1,4 +1,4 @@
-// perk-variants-convert: turns Perk Variants items in an Enshrouded save back into the
+// variants-reverter: turns Perk Variants items in an Enshrouded save back into the
 // vanilla items they were made from, so the mod can be switched off without the game
 // deleting them (an unknown ItemId is dropped silently on load).
 //
@@ -7,7 +7,7 @@
 // over the chunk's stored bytes. Changed chunks are written uncompressed (the chunk
 // readers accept compression 0); every other chunk is copied byte for byte.
 //
-// Usage: perk-variants-convert <save.ksd> [--map <variant-map.txt>] [--out <file>]
+// Usage: variants-reverter <save.ksd> [--map <variant-map.txt>] [--out <file>]
 // Without --out it only reports. The input file is never modified.
 //
 // Third-party code: zstd (BSD, Meta Platforms) for decompression, license in
@@ -178,16 +178,16 @@ std::string exe_dir(const char* argv0) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::printf("perk-variants-convert %s\n", kVersion);
+    std::printf("variants-reverter %s\n", kVersion);
     std::string in, out, map_path = exe_dir(argv[0]) + "\\variant-map.txt";
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--out" && i + 1 < argc) out = argv[++i];
         else if (a == "--map" && i + 1 < argc) map_path = argv[++i];
         else if (in.empty() && a[0] != '-') in = a;
-        else { std::fprintf(stderr, "usage: perk-variants-convert <save.ksd> [--map <variant-map.txt>] [--out <file>]\n"); return 2; }
+        else { std::fprintf(stderr, "usage: variants-reverter <save.ksd> [--map <variant-map.txt>] [--out <file>]\n"); return 2; }
     }
-    if (in.empty()) { std::fprintf(stderr, "usage: perk-variants-convert <save.ksd> [--map <variant-map.txt>] [--out <file>]\n"); return 2; }
+    if (in.empty()) { std::fprintf(stderr, "usage: variants-reverter <save.ksd> [--map <variant-map.txt>] [--out <file>]\n"); return 2; }
 
     std::unordered_map<uint32_t, uint32_t> map;
     std::map<uint32_t, std::string> names;

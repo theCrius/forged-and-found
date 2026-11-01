@@ -1,4 +1,4 @@
-# perk-variants-convert variant map: <variant ItemId> <original ItemId> <variant debug name>
+# variants-reverter variant map: <variant ItemId> <original ItemId> <variant debug name>
 # generated from the data mod's manifest export (4224 variants); append-only like data/pinned.txt
 1101385533 458314937 Weapon_T4_2H_Staff_02__PV1
 2348999049 458314937 Weapon_T4_2H_Staff_02__PV2
