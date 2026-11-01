@@ -2,3 +2,20 @@
 native/build/
 mods/forged-and-found/bin/
 dist/
+
+# Local test flag: shows "§" in front of variant names (testing only, never shipped)
+mods/forged-and-found/marker.enabled
+
+# Private workspace: notes, research, local tools and the ShroudForge reference clone
+CLAUDE.md
+.claude/
+devlog/
+research/
+mods/perk-dump/
+shroudforge/
+tools/iced/
+
+# Editor / OS noise
+.vscode/
+*.tmp
+Thumbs.db
