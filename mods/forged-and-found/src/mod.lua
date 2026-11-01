@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.11.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
+-- Forged & Found prototype 0.12.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -55,10 +55,12 @@
 -- other phase (e.g. the in-game runtime, which the export capability opts into)
 -- there is nothing to do: the patch from the asset pass is already in the files.
 if not loader.features.patch then
-    shroudforge.log.info("[perk-variants] no patch access in this phase, nothing to do")
+    shroudforge.log.info("[forged-and-found] no patch access in this phase, nothing to do")
     return
 end
 
+-- The seeds keep the mod's first name (Perk Variants) on purpose: every variant GUID and
+-- ItemId is derived from SEED, so renaming it would orphan every variant in every save.
 local SEED = "perk-variants/v0"          -- variant GUIDs (never change: saves store them)
 local ROLL_SEED = "perk-variants/rolls-v1" -- rolls of items not in the pinned list
 -- Only items that can drop as Epic or Legendary get variants (~745). Total
@@ -95,7 +97,7 @@ local u32 = integer.u32
 
 -- shroudforge.log.info logs at INFO, ShroudForge's default level (print() would be
 -- logged at DEBUG and dropped). Lines land in <game>/shroudforge/logs.
-local function log(msg) shroudforge.log.info("[perk-variants] " .. msg) end
+local function log(msg) shroudforge.log.info("[forged-and-found] " .. msg) end
 
 -- The dedicated server (enshrouded_server.exe) has no UI, so its data may lack icon
 -- textures, UI bundles and text tables. It builds the same variants, registrations
@@ -168,7 +170,7 @@ local function json_decode(text)
                     out[#out + 1] = ({ b = "\b", f = "\f", n = "\n", r = "\r", t = "\t" })[n] or n; i = i + 2
                 end
             elseif c == "" then
-                error("perk-variants: unterminated JSON string")
+                error("forged-and-found: unterminated JSON string")
             else
                 out[#out + 1] = c; i = i + 1
             end
@@ -204,7 +206,7 @@ local function json_decode(text)
         elseif text:sub(pos, pos + 3) == "null" then pos = pos + 4; return nil
         else
             local s, e = text:find("^-?[%d%.eE%+%-]+", pos)
-            if not s then error("perk-variants: unexpected JSON at " .. pos .. ": " .. text:sub(pos, pos + 20)) end
+            if not s then error("forged-and-found: unexpected JSON at " .. pos .. ": " .. text:sub(pos, pos + 20)) end
             pos = e + 1
             local num = text:sub(s, e)
             return math.tointeger(tonumber(num)) or tonumber(num)
@@ -216,7 +218,7 @@ end
 local function read_copy(view)
     local text = tostring(view)
     local first = text:sub(1, 1)
-    if first ~= "{" and first ~= "[" then error("perk-variants: cannot copy value: " .. text:sub(1, 40)) end
+    if first ~= "{" and first ~= "[" then error("forged-and-found: cannot copy value: " .. text:sub(1, 40)) end
     return json_decode(text)
 end
 
@@ -228,7 +230,7 @@ local function text_of(resource) return tostring(resource.data) end
 
 local function single(type_name)
     local list = game.assets.get_resources_by_type(type_name)
-    if #list ~= 1 then error("perk-variants: expected one " .. type_name .. ", found " .. #list) end
+    if #list ~= 1 then error("forged-and-found: expected one " .. type_name .. ", found " .. #list) end
     return list[1]
 end
 
@@ -720,12 +722,12 @@ if io.exists(PINNED_FILE) then
             for f in body:gmatch("%S+") do fields[#fields + 1] = f end
             local original, index, guid = fields[1], tonumber(fields[2]), fields[3]
             if not (original and index and guid and #fields >= 4) then
-                error("perk-variants: malformed line in " .. PINNED_FILE .. ": " .. line)
+                error("forged-and-found: malformed line in " .. PINNED_FILE .. ": " .. line)
             end
             local list = pinned[original] or {}
             pinned[original] = list
             if index ~= #list + 1 then
-                error(string.format("perk-variants: %s: variant %d of %s out of order", PINNED_FILE, index, original))
+                error(string.format("forged-and-found: %s: variant %d of %s out of order", PINNED_FILE, index, original))
             end
             local perks = {}
             for k = 4, #fields do perks[#perks + 1] = fields[k] end
@@ -750,7 +752,7 @@ local stats = { pinned = 0, rolled = 0, fallback_slots = 0 }
 local function create_variant(original, info, source, index, perks)
     local guid = derive_guid(SEED .. "|" .. original .. "|" .. index)
     local id = game.guid.hash(guid)
-    if used_ids[id] then error("perk-variants: ItemId collision for " .. info.name .. " #" .. index) end
+    if used_ids[id] then error("forged-and-found: ItemId collision for " .. info.name .. " #" .. index) end
     used_ids[id] = true
 
     local item = game.assets.create_resource(source.data, "keen::ItemInfo", guid, 0)
@@ -785,13 +787,13 @@ for _, original in ipairs(item_order) do
     local list = {}
     local source = game.assets.get_resource(original, "keen::ItemInfo")
     if not IS_SERVER and not game.assets.get_resource(original, "keen::UiTextureResource", 0) then
-        error("perk-variants: no icon texture for " .. info.name)
+        error("forged-and-found: no icon texture for " .. info.name)
     end
 
     for _, e in ipairs(pinned[original] or {}) do
         local guid = derive_guid(SEED .. "|" .. original .. "|" .. e.index)
         if guid ~= e.guid then
-            error(string.format("perk-variants: %s variant %d: GUID %s, pinned %s (derivation changed; saves would lose these items)",
+            error(string.format("forged-and-found: %s variant %d: GUID %s, pinned %s (derivation changed; saves would lose these items)",
                 info.name, e.index, guid, e.guid))
         end
         local perks = {}
@@ -1070,7 +1072,7 @@ do
 
     local recipes = single("keen::RecipeRegistryResource").data.recipes
     if #recipes ~= index then
-        error(string.format("perk-variants: recipe registry has %d recipes, text parse found %d outputs", #recipes, index))
+        error(string.format("forged-and-found: recipe registry has %d recipes, text parse found %d outputs", #recipes, index))
     end
     local changed, examples, by_factor = 0, {}, {}
     for _, original in ipairs(item_order) do
@@ -1225,7 +1227,7 @@ do
     local loot = single("keen::LootableItemsResource").data
     local ids = loot_item_ids(loot)
     if #reg.itemRefs ~= #ids or #reg.itemRefs ~= #reg.dbgNames then
-        error("perk-variants: registry/loot arrays not parallel before patching")
+        error("forged-and-found: registry/loot arrays not parallel before patching")
     end
     local loot_index = {}
     for i, id in ipairs(ids) do loot_index[id] = i end
@@ -1245,7 +1247,7 @@ do
         if #list > 0 then
             local info = items[original]
             local i = loot_index[info.id]
-            if not i then error("perk-variants: no loot entry for " .. info.name) end
+            if not i then error("forged-and-found: no loot entry for " .. info.name) end
             local original_entry = loot.items[i]
             local labels = original_entry.labelGroups
             local has_labels = #labels.labels > 0 or #labels.childGroups > 0
@@ -1323,15 +1325,15 @@ local function verify_static_hash_map(map, key_pattern, label)
     local n, running, index = #entries, 0, {}
     for b = 0, n - 1 do
         local e = entries[b + 1]
-        if e.start ~= running then error("perk-variants: " .. label .. " bucket " .. b .. " not contiguous") end
+        if e.start ~= running then error("forged-and-found: " .. label .. " bucket " .. b .. " not contiguous") end
         for i = e.start + 1, e.start + e.count do
             local k = keys[i]
-            if not k or k % n ~= b then error("perk-variants: " .. label .. " key " .. tostring(k) .. " in wrong bucket") end
+            if not k or k % n ~= b then error("forged-and-found: " .. label .. " key " .. tostring(k) .. " in wrong bucket") end
             index[k] = i
         end
         running = running + e.count
     end
-    if running ~= #keys then error("perk-variants: " .. label .. " count mismatch") end
+    if running ~= #keys then error("forged-and-found: " .. label .. " count mismatch") end
     return index
 end
 
@@ -1347,7 +1349,7 @@ do
     local index = verify_static_hash_map(data, ITEM_KEY, "ItemKnowledge")
     local additions = {}
     for _, v in ipairs(variants) do
-        if index[v.id] then error("perk-variants: variant " .. v.name .. " collides with existing item knowledge id " .. v.id) end
+        if index[v.id] then error("forged-and-found: variant " .. v.name .. " collides with existing item knowledge id " .. v.id) end
         local i = index[v.original_id]
         if i then additions[#additions + 1] = { key = v.id, src = i } end
     end
@@ -1368,7 +1370,7 @@ do
         local index = verify_static_hash_map(map, KNOWLEDGE_KEY, field)
         local additions = {}
         for _, v in ipairs(variants) do
-            if index[v.id] then error("perk-variants: variant " .. v.name .. " collides with existing knowledge id " .. v.id) end
+            if index[v.id] then error("forged-and-found: variant " .. v.name .. " collides with existing knowledge id " .. v.id) end
             local i = index[v.original_id]
             if i then additions[#additions + 1] = { key = v.id, src = i } end
         end
@@ -1389,14 +1391,14 @@ for _, original in ipairs(item_order) do
         local text = text_of(game.assets.get_resource(original, "keen::ItemInfo"))
         local id = tonumber(text:match('^{"itemId":{"value":(%d+)}'))
         if id ~= items[original].id then
-            error("perk-variants: vanilla item " .. items[original].name .. " was modified, aborting")
+            error("forged-and-found: vanilla item " .. items[original].name .. " was modified, aborting")
         end
     end
 end
 for _, v in ipairs(variants) do
     -- Variants show the texture named by their objectId, i.e. the original's.
     if not IS_SERVER and not game.assets.get_resource(v.original, "keen::UiTextureResource", 0) then
-        error("perk-variants: original of " .. v.name .. " has no icon texture")
+        error("forged-and-found: original of " .. v.name .. " has no icon texture")
     end
 end
 
@@ -1418,29 +1420,29 @@ do
     for _ in tostring(reg.dbgNames):gmatch('"[^"]*"') do names = names + 1 end
     local ids = loot_item_ids(single("keen::LootableItemsResource").data)
     if names ~= #refs or #ids ~= #refs then
-        error(string.format("perk-variants: registry/loot lengths differ (%d refs, %d names, %d loot)", #refs, names, #ids))
+        error(string.format("forged-and-found: registry/loot lengths differ (%d refs, %d names, %d loot)", #refs, names, #ids))
     end
 
     local ik = single("keen::ItemKnowledgeResource").data
     local index = verify_static_hash_map(ik, ITEM_KEY, "ItemKnowledge (after)")
     for i, g in ipairs(refs) do
         local id = game.guid.hash(g)
-        if ids[i] ~= id then error("perk-variants: registry/loot mismatch at index " .. i) end
-        if not index[id] then error("perk-variants: registry item without ItemKnowledge at index " .. i) end
+        if ids[i] ~= id then error("forged-and-found: registry/loot mismatch at index " .. i) end
+        if not index[id] then error("forged-and-found: registry item without ItemKnowledge at index " .. i) end
     end
     local value_ids = {}
     for id in tostring(ik.values):gmatch('{"itemId":{"value":(%d+)}') do value_ids[#value_ids + 1] = tonumber(id) end
     for k, i in pairs(index) do
-        if value_ids[i] ~= k then error("perk-variants: ItemKnowledge key/value mismatch for " .. k) end
+        if value_ids[i] ~= k then error("forged-and-found: ItemKnowledge key/value mismatch for " .. k) end
     end
 
     local gk = single("keen::GameKnowledgeResource").data
     local world = verify_static_hash_map(gk.worldKnowledge, KNOWLEDGE_KEY, "worldKnowledge (after)")
     local player = verify_static_hash_map(gk.playerKnowledge, KNOWLEDGE_KEY, "playerKnowledge (after)")
     for _, v in ipairs(variants) do
-        if index[v.original_id] and not index[v.id] then error("perk-variants: ItemKnowledge missing variant " .. v.name) end
-        if world[v.original_id] and not world[v.id] then error("perk-variants: worldKnowledge missing variant " .. v.name) end
-        if player[v.original_id] and not player[v.id] then error("perk-variants: playerKnowledge missing variant " .. v.name) end
+        if index[v.original_id] and not index[v.id] then error("forged-and-found: ItemKnowledge missing variant " .. v.name) end
+        if world[v.original_id] and not world[v.id] then error("forged-and-found: worldKnowledge missing variant " .. v.name) end
+        if player[v.original_id] and not player[v.id] then error("forged-and-found: playerKnowledge missing variant " .. v.name) end
     end
 end
 
@@ -1472,12 +1474,12 @@ if loader.features.export then
     -- First element: the switches the DLL needs. A manifest without this line (older
     -- versions) means variant drops off.
     table.insert(lines, 1, string.format('{"settings":{"variantDrops":%s}}', tostring(VARIANT_DROPS)))
-    io.export("perk-variants/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")
+    io.export("forged-and-found/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")
 
     -- Pinned list for the next release: every variant built now, plus pinned
     -- entries whose item is gone (kept, append-only: the item may come back).
     local out = {
-        "# perk-variants pinned rolls (append-only; never edit or remove shipped lines)",
+        "# forged-and-found pinned rolls (append-only; never edit or remove shipped lines)",
         "# <original GUID> <index> <variant GUID> <perk GUID per slot>  # debug names",
     }
     local originals, listed = {}, {}
@@ -1500,6 +1502,6 @@ if loader.features.export then
             end
         end
     end
-    io.export("perk-variants/pinned.txt", table.concat(out, "\n") .. "\n")
+    io.export("forged-and-found/pinned.txt", table.concat(out, "\n") .. "\n")
 end
 log("done")

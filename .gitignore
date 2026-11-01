@@ -15,4 +15,4 @@ Thumbs.db
 
 # Native build output (rebuild with native/build.ps1; /Brepro makes it byte-identical)
 native/build/
-mods/perk-variants/bin/
+mods/forged-and-found/bin/

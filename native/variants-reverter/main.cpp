@@ -1,4 +1,4 @@
-// variants-reverter: turns Perk Variants items in an Enshrouded save back into the
+// variants-reverter: turns Forged & Found items in an Enshrouded save back into the
 // vanilla items they were made from, so the mod can be switched off without the game
 // deleting them (an unknown ItemId is dropped silently on load).
 //

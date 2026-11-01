@@ -1,8 +1,12 @@
-// perk-variants-native: the native half of the perk-variants mod.
+// forged-and-found-native: the native half of the forged-and-found mod.
 //
 // Hooks the function that creates new items into an inventory, enshrouded.exe+0x40B4F0
 // (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
 // enemy loot, world pickups, gathering), not for moving items and not for crafting.
+//
+// 0.7.0 (rename): the mod is now Forged & Found (id forged-and-found); DLL, log and
+// export paths follow the new id. Variant ids are unchanged (the data mod's seeds keep
+// the old name).
 //
 // 0.6.0 (features): variant drops are a ShroudForge setting (off by default). The data
 // mod writes it as the manifest's first line, {"settings":{"variantDrops":true|false}};
@@ -21,7 +25,7 @@
 // 0.3.0 (swap): when a verified loot caller creates an Epic or Legendary item that has
 // variants, the item is rolled uniformly among {vanilla, variant 1..n} and the chosen
 // ItemId is passed on instead (developer's design, CLAUDE.md "Delivery design"). The
-// variant table comes from the data mod's export (shroudforge/exports/perk-variants/
+// variant table comes from the data mod's export (shroudforge/exports/forged-and-found/
 // manifest.json, written in the asset pass before this DLL loads); lore items never
 // have variants. Callers whose rarity argument is not verified (world pickups, the
 // fixed-item loop) are only logged, and the crafting UI's simulated adds are skipped.
@@ -31,7 +35,7 @@
 // anything else (other build, another mod's hook) leaves the game untouched and logs why. ShroudForge loads this DLL before
 // the game entrypoint, so no game thread runs the target while it is patched.
 //
-// Log: <game>/shroudforge/logs/perk-variants-native.log. Nothing is written into the
+// Log: <game>/shroudforge/logs/forged-and-found-native.log. Nothing is written into the
 // mod folder: ShroudForge fingerprints the package ("restart required" otherwise).
 
 #include <windows.h>
@@ -49,7 +53,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.6.0";
+constexpr const char* kVersion = "0.7.0";
 
 constexpr uint8_t kEpic = 3, kLegendary = 4;
 
@@ -146,7 +150,7 @@ std::unordered_map<uint32_t, uint32_t>* g_markers = nullptr;
 std::unordered_map<uint64_t, std::unordered_map<uint32_t, const LocaEntry*>>* g_marker_entries = nullptr;
 SRWLOCK g_marker_lock = SRWLOCK_INIT;
 
-// <game>/shroudforge/logs/perk-variants-native.log; <game> is the host exe's folder.
+// <game>/shroudforge/logs/forged-and-found-native.log; <game> is the host exe's folder.
 bool resolve_log_path() {
     wchar_t path[MAX_PATH];
     DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
@@ -154,7 +158,7 @@ bool resolve_log_path() {
     wchar_t* slash = wcsrchr(path, L'\\');
     if (!slash) return false;
     *slash = L'\0';
-    return swprintf(g_log_path, MAX_PATH, L"%s\\shroudforge\\logs\\perk-variants-native.log", path) > 0;
+    return swprintf(g_log_path, MAX_PATH, L"%s\\shroudforge\\logs\\forged-and-found-native.log", path) > 0;
 }
 
 void log_line(const char* text) {
@@ -288,7 +292,7 @@ uint64_t create_item_hook(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, ui
 }
 
 // Reads the data mod's export: one variant per line, with "originalId":N and "itemId":N.
-// <game>/shroudforge/exports/perk-variants/manifest.json, written by the asset pass of
+// <game>/shroudforge/exports/forged-and-found/manifest.json, written by the asset pass of
 // this launch (or the last launch that patched, when the pass was skipped as unchanged).
 bool load_variant_table(char* text, size_t text_size) {
     wchar_t path[MAX_PATH];
@@ -298,11 +302,11 @@ bool load_variant_table(char* text, size_t text_size) {
     if (!slash) return false;
     *slash = L'\0';
     wchar_t file[MAX_PATH];
-    swprintf(file, MAX_PATH, L"%s\\shroudforge\\exports\\perk-variants\\manifest.json", path);
+    swprintf(file, MAX_PATH, L"%s\\shroudforge\\exports\\forged-and-found\\manifest.json", path);
 
     HANDLE h = CreateFileW(file, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
-        snprintf(text, text_size, "no variant table (shroudforge/exports/perk-variants/manifest.json missing)");
+        snprintf(text, text_size, "no variant table (shroudforge/exports/forged-and-found/manifest.json missing)");
         return false;
     }
     LARGE_INTEGER size{};
@@ -522,7 +526,7 @@ void start() {
     DWORD stamp = nt->FileHeader.TimeDateStamp, size = nt->OptionalHeader.SizeOfImage;
 
     char text[512];
-    snprintf(text, sizeof text, "perk-variants-native %s loaded: host %s (pid %lu), PE TimeDateStamp 0x%08lX, SizeOfImage 0x%lX",
+    snprintf(text, sizeof text, "forged-and-found-native %s loaded: host %s (pid %lu), PE TimeDateStamp 0x%08lX, SizeOfImage 0x%lX",
              kVersion, name, GetCurrentProcessId(), static_cast<unsigned long>(stamp), static_cast<unsigned long>(size));
     log_line(text);
 
