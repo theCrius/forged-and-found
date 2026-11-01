@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.4 (test worlds only).
+-- Perk Variants prototype 0.6.5 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -964,21 +964,56 @@ do
     log("crafted armor level per tier: " .. table.concat(parts, " "))
 
     local raised = 0
+    local lore_counts = {}   -- tier -> vanilla lore level -> count (for the UI table below)
     for _, original in ipairs(item_order) do
         local info = items[original]
         local target = info.tier and armor_level[info.tier]
         if target and info.name:find("^Craft_") and info.name:find("_Lore_") then
             local resource = game.assets.get_resource(original, "keen::ItemInfo")
             local min, max = text_of(resource):match('"itemLevelRange":{"minLevel":(%d+),"maxLevel":(%d+)}')
-            if tonumber(min) and tonumber(min) < target then
+            min, max = tonumber(min), tonumber(max)
+            if min then
+                lore_counts[info.tier] = lore_counts[info.tier] or {}
+                lore_counts[info.tier][min] = (lore_counts[info.tier][min] or 0) + 1
+            end
+            if min and min < target then
                 local range = resource.data.itemLevelRange
                 range.minLevel = target
-                if tonumber(max) < target then range.maxLevel = target end
+                if max < target then range.maxLevel = target end
                 raised = raised + 1
             end
         end
     end
     log(string.format("crafted lore items: %d raised to their tier's armor level", raised))
+
+    -- The crafting screen previews the next lore level ("Base Lore Item Level:
+    -- 26 > 36", The Flame Level 7/8) from its own table, FbUiBundle.menu.crafting
+    -- .loreWeaponUpgrades = { flameLevel, itemLevel }, which repeats the vanilla
+    -- lore levels. Each entry is matched to its tier by that vanilla level and
+    -- gets the raised level, so the preview matches the crafted items.
+    local new_level = {}   -- vanilla lore level -> raised level
+    for tier, levels in pairs(lore_counts) do
+        local best, best_n = nil, 0
+        for level, n in pairs(levels) do
+            if n > best_n or (n == best_n and level > best) then best, best_n = level, n end
+        end
+        if best and armor_level[tier] and armor_level[tier] > best then new_level[best] = armor_level[tier] end
+    end
+    local previews, changes = 0, {}
+    for _, bundle in ipairs(game.assets.get_resources_by_type("keen::FbUiBundle")) do
+        local upgrades = bundle.data.menu.crafting.loreWeaponUpgrades
+        local i = 0
+        for flame, level in tostring(upgrades):gmatch('"flameLevel":(%d+),"itemLevel":(%d+)') do
+            i = i + 1
+            local target = new_level[tonumber(level)]
+            if target then
+                upgrades[i].itemLevel = target
+                previews = previews + 1
+                changes[#changes + 1] = "flame " .. flame .. ": " .. level .. "->" .. target
+            end
+        end
+    end
+    log(string.format("lore upgrade preview table: %d entries raised (%s)", previews, table.concat(changes, ", ")))
 end
 
 ---------------------------------------------------------------------------
