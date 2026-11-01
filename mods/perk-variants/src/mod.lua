@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.7 (test worlds only; LABEL_TEST on).
+-- Perk Variants prototype 0.6.8 (test worlds only; LABEL_TEST on).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -1087,27 +1087,37 @@ do
 end
 
 ---------------------------------------------------------------------------
--- TEST (research for a variant marker, remove afterwards): does equipment
--- show ItemInfo.caption, and does an item tag's label show like "Lore Item"?
--- The three T5 crafted shields at the Blacksmith: DPS gets a caption (the text
--- some fish use), Tank gets the lore item tag, Rogue stays as the control.
+-- TEST (research for a variant marker, remove afterwards). 0.6.7 showed that
+-- equipment ignores ItemInfo.caption but shows an item tag's label (the lore tag
+-- added "Lore Item"). Tag labels come from ItemRegistryResource.itemTags
+-- {tagGuid, labelId}. Do new tags of our own work, with existing texts as labels?
+-- T5 crafted shields at the Blacksmith: DPS gets new tag A ("Special Item"),
+-- Rogue new tag B ("Unique Equipment"), Tank the existing "Special" tag.
 ---------------------------------------------------------------------------
 
 local LABEL_TEST = true
 if LABEL_TEST then
-    local FISH_CAPTION = "6f8a595c-9aee-4082-9e37-6988ad8e9147"
-    local LORE_TAG = "213a1e76-f488-4ba5-b342-85726cb1ab9d"
+    local NEW_TAGS = {
+        Shield_T5_DPS = { guid = "d278bb23-ed92-4e98-ab2a-768f34441e7c", label = 1795441266 },  -- "Special Item"
+        Shield_T5_Rogue = { guid = "ef6f54de-ec87-4fad-9fa5-29e82009654f", label = 3036299198 }, -- "Unique Equipment"
+    }
+    local SPECIAL_TAG = "5dd3db6f-62b3-4a59-804e-e2b50350cae0" -- vanilla, label "Special"
+    local reg_tags = single("keen::ItemRegistryResource").data.itemTags
+    for _, t in pairs(NEW_TAGS) do
+        table.insert(reg_tags, reg_tags[1])
+        reg_tags[#reg_tags].tagGuid = t.guid
+        reg_tags[#reg_tags].labelId.value = t.label
+    end
+    log(string.format("LABEL_TEST: registry itemTags now %d", #reg_tags))
     for _, original in ipairs(item_order) do
         local name = items[original].name
-        if name == "Shield_T5_DPS" then
-            game.assets.get_resource(original, "keen::ItemInfo").data.caption = FISH_CAPTION
-            log("LABEL_TEST: caption set on Shield_T5_DPS")
-        elseif name == "Shield_T5_Tank" then
+        local tag = (NEW_TAGS[name] and NEW_TAGS[name].guid) or (name == "Shield_T5_Tank" and SPECIAL_TAG)
+        if tag then
             local tags = game.assets.get_resource(original, "keen::ItemInfo").data.tags
             table.insert(tags, tags[1])
-            tags[#tags].tag = LORE_TAG
+            tags[#tags].tag = tag
             tags[#tags].nominator = 1
-            log("LABEL_TEST: lore item tag added to Shield_T5_Tank")
+            log("LABEL_TEST: tag " .. tag .. " added to " .. name)
         end
     end
 end
