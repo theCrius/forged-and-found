@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.6 (test worlds only).
+-- Perk Variants prototype 0.6.7 (test worlds only; LABEL_TEST on).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -1084,6 +1084,32 @@ do
     table.sort(parts)
     log(string.format("crafting cost by rarity change: %d recipes scaled (%s)", changed, table.concat(parts, ", ")))
     for _, e in ipairs(examples) do log("  cost example " .. e) end
+end
+
+---------------------------------------------------------------------------
+-- TEST (research for a variant marker, remove afterwards): does equipment
+-- show ItemInfo.caption, and does an item tag's label show like "Lore Item"?
+-- The three T5 crafted shields at the Blacksmith: DPS gets a caption (the text
+-- some fish use), Tank gets the lore item tag, Rogue stays as the control.
+---------------------------------------------------------------------------
+
+local LABEL_TEST = true
+if LABEL_TEST then
+    local FISH_CAPTION = "6f8a595c-9aee-4082-9e37-6988ad8e9147"
+    local LORE_TAG = "213a1e76-f488-4ba5-b342-85726cb1ab9d"
+    for _, original in ipairs(item_order) do
+        local name = items[original].name
+        if name == "Shield_T5_DPS" then
+            game.assets.get_resource(original, "keen::ItemInfo").data.caption = FISH_CAPTION
+            log("LABEL_TEST: caption set on Shield_T5_DPS")
+        elseif name == "Shield_T5_Tank" then
+            local tags = game.assets.get_resource(original, "keen::ItemInfo").data.tags
+            table.insert(tags, tags[1])
+            tags[#tags].tag = LORE_TAG
+            tags[#tags].nominator = 1
+            log("LABEL_TEST: lore item tag added to Shield_T5_Tank")
+        end
+    end
 end
 
 ---------------------------------------------------------------------------
