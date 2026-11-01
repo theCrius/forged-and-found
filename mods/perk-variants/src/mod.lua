@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.1 (test worlds only).
+-- Perk Variants prototype 0.6.2 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -879,6 +879,38 @@ do
         end
     end
     log(string.format("crafted lore items: %d set to %s", changed, CRAFTED_LORE_RARITY))
+end
+
+---------------------------------------------------------------------------
+-- Crafted armor sets at Epic (developer, 2026-11-01)
+--
+-- Armor the artisans craft (recipe outputs named Armor_*) has a fixed rarity;
+-- most sets are Rare with 5 perks defined, of which Rare shows 3. Those become
+-- Epic (4 perks). Crafted armor is a separate item type from loot armor
+-- (*_Loot) and never gets variants, so loot is unaffected. Sets with fewer
+-- than 4 perks would gain nothing and stay Rare; Common/Uncommon sets stay.
+---------------------------------------------------------------------------
+
+local CRAFTED_ARMOR_FROM, CRAFTED_ARMOR_TO = "Rare", "Epic"
+do
+    local outputs = {}
+    for list in text_of(single("keen::RecipeRegistryResource")):gmatch('"output":%[(.-)%]') do
+        for g in list:gmatch('"itemRef":"([%x%-]+)"') do outputs[g] = true end
+    end
+    local changed = 0
+    for _, original in ipairs(item_order) do
+        local info = items[original]
+        if outputs[original] and info.name:find("^Armor_") and not info.gen then
+            local defined = 0
+            for _, p in ipairs(info.perks) do if p ~= NONE then defined = defined + 1 end end
+            local resource = game.assets.get_resource(original, "keen::ItemInfo")
+            if defined >= 4 and text_of(resource):match('"rarity":"(%a+)"') == CRAFTED_ARMOR_FROM then
+                resource.data.rarity = CRAFTED_ARMOR_TO
+                changed = changed + 1
+            end
+        end
+    end
+    log(string.format("crafted armor: %d pieces set from %s to %s", changed, CRAFTED_ARMOR_FROM, CRAFTED_ARMOR_TO))
 end
 
 ---------------------------------------------------------------------------
