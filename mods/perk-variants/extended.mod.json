@@ -7,5 +7,39 @@
     "server"
   ],
   "launcher": "SF",
-  "settings": {}
+  "settings": {
+    "variantDrops": {
+      "value": false,
+      "label": "Variant drops",
+      "description": "Epic and Legendary items from random chests, enemy remains and bosses can drop as variants with different enhancements. Turning this off only stops new variants from dropping: variants you already own stay variants and keep working while the mod is installed. Before removing the mod, convert them with variants-reverter, or the game deletes them. On a dedicated server, the server's setting decides.",
+      "control": "toggle",
+      "applyAt": "restart",
+      "restartRequired": true,
+      "assetPreparation": true
+    },
+    "craftedEquipmentRarity": {
+      "value": false,
+      "label": "Crafted equipment rarity by level",
+      "description": "Armor, shields and weapons crafted at artisans get their rarity from their item level (up to 5 Common, up to 10 Uncommon, up to 15 Rare, above that Epic). Their crafting cost changes by 25% per rarity step. Items crafted before keep the rarity they were crafted with.",
+      "control": "toggle",
+      "applyAt": "restart",
+      "restartRequired": true,
+      "assetPreparation": true
+    },
+    "craftedLoreItems": {
+      "value": false,
+      "label": "Crafted lore items",
+      "description": "Copies of lore items crafted at artisans become Legendary (crafting cost +50%) and are raised to the item level of the crafted armor of their tier, also in the crafting preview. Items crafted before keep the rarity they were crafted with.",
+      "control": "toggle",
+      "applyAt": "restart",
+      "restartRequired": true,
+      "assetPreparation": true
+    }
+  },
+  "groups": [
+    {
+      "label": "Features",
+      "settings": ["variantDrops", "craftedEquipmentRarity", "craftedLoreItems"]
+    }
+  ]
 }

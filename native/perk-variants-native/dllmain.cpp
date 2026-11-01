@@ -4,6 +4,11 @@
 // (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
 // enemy loot, world pickups, gathering), not for moving items and not for crafting.
 //
+// 0.6.0 (features): variant drops are a ShroudForge setting (off by default). The data
+// mod writes it as the manifest's first line, {"settings":{"variantDrops":true|false}};
+// only with true is the loot hook installed. A manifest without that line counts as off.
+// The variant table is still read, so the marker keeps naming variants players own.
+//
 // 0.5.0 (server): the same DLL also runs in enshrouded_server.exe, which has the same
 // loot code at other addresses (kBuilds, research/server-port.md). The server rolls the
 // loot in multiplayer, so it does the swap there; it has no UI text, so no marker hooks.
@@ -44,7 +49,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.5.0";
+constexpr const char* kVersion = "0.6.0";
 
 constexpr uint8_t kEpic = 3, kLegendary = 4;
 
@@ -130,6 +135,7 @@ TextLookupFn g_find_entry = nullptr;  // the trampoline when hooked, else the ga
 
 // Original ItemId -> its variants' ItemIds. Filled once in DllMain, read-only afterwards.
 std::unordered_map<uint32_t, std::vector<uint32_t>>* g_variants = nullptr;
+bool g_drops = false;  // the "Variant drops" setting, from the manifest's first line
 std::atomic<uint64_t> g_roll_counter{0};
 
 // Marker name LocaTagId -> the original name's LocaTagId (from the manifest; present only
@@ -310,6 +316,7 @@ bool load_variant_table(char* text, size_t text_size) {
         return false;
     }
 
+    g_drops = strstr(data.data(), "\"variantDrops\":true") != nullptr;
     auto* table = new std::unordered_map<uint32_t, std::vector<uint32_t>>();
     auto* markers = new std::unordered_map<uint32_t, uint32_t>();
     size_t variants = 0, bad = 0;
@@ -351,8 +358,8 @@ bool load_variant_table(char* text, size_t text_size) {
     } else {
         delete markers;
     }
-    snprintf(text, text_size, "variant table: %zu items with %zu variants; %zu marker names", table->size(), variants,
-             g_markers ? g_markers->size() : 0);
+    snprintf(text, text_size, "variant table: %zu items with %zu variants; %zu marker names; variant drops %s",
+             table->size(), variants, g_markers ? g_markers->size() : 0, g_drops ? "on" : "off (setting)");
     return true;
 }
 
@@ -531,7 +538,9 @@ void start() {
     // Without a valid table the loot hook still installs, but only logs (g_variants stays null).
     bool swapping = load_variant_table(text, sizeof text);
     log_line(text);
-    if (!install_hook(g_build->create_item, kCreateItemPrologue, reinterpret_cast<void*>(&create_item_hook),
+    if (swapping && !g_drops) {
+        log_line("loot hook not installed: variant drops are off in the mod's settings");
+    } else if (!install_hook(g_build->create_item, kCreateItemPrologue, reinterpret_cast<void*>(&create_item_hook),
                       &g_create_item_original)) {
         log_line("loot hook NOT installed: create-item prologue differs (patched by something else?)");
     } else {

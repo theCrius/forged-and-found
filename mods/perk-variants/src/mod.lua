@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.10.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server).
+-- Perk Variants prototype 0.11.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -103,6 +103,21 @@ local function log(msg) shroudforge.log.info("[perk-variants] " .. msg) end
 -- multiplayer) and skips only the UI parts: icon checks and the marker.
 local IS_SERVER = loader.is_server == true
 log("process: " .. (IS_SERVER and "dedicated server (UI checks and marker skipped)" or "client"))
+
+-- Features (ShroudForge settings in extended.mod.json, all off by default; a change
+-- rewrites extended.mod.json, so the next start re-runs this asset pass).
+--   variantDrops: the native DLL swaps random Epic/Legendary loot for variants. Variants
+--     are registered either way, so variants players already own keep working.
+--   craftedEquipmentRarity: crafted armor/shields/weapons get rarity by item level.
+--   craftedLoreItems: crafted lore copies become Legendary at their tier's armor level.
+-- Crafting costs follow whichever rarity changes are on. On a dedicated server the
+-- server's settings decide what is created; clients only show their own data.
+local function feature(key) return shroudforge.settings.get(key, false) == true end
+local VARIANT_DROPS = feature("variantDrops")
+local CRAFTED_EQUIPMENT = feature("craftedEquipmentRarity")
+local CRAFTED_LORE = feature("craftedLoreItems")
+log(string.format("features: variant drops %s, crafted equipment rarity %s, crafted lore items %s",
+    VARIANT_DROPS and "on" or "off", CRAFTED_EQUIPMENT and "on" or "off", CRAFTED_LORE and "on" or "off"))
 
 ---------------------------------------------------------------------------
 -- Deterministic helpers
@@ -866,7 +881,9 @@ end
 local RARITY_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5 }
 local rarity_steps = {}   -- crafted item guid -> rarity steps changed by the mod (+ up, - down)
 local CRAFTED_LORE_RARITY = "Legendary"
-do
+if not CRAFTED_LORE then
+    log("crafted lore items: off (vanilla rarity)")
+else
     local changed = 0
     for _, original in ipairs(item_order) do
         if items[original].name:find("^Craft_") and items[original].name:find("_Lore_") then
@@ -905,7 +922,9 @@ local crafted = {}   -- GUIDs of every recipe output
 for list in text_of(single("keen::RecipeRegistryResource")):gmatch('"output":%[(.-)%]') do
     for g in list:gmatch('"itemRef":"([%x%-]+)"') do crafted[g] = true end
 end
-do
+if not CRAFTED_EQUIPMENT then
+    log("crafted equipment rarity by level: off (vanilla rarity)")
+else
     local changed, moves = 0, {}
     for _, original in ipairs(item_order) do
         local info = items[original]
@@ -946,9 +965,12 @@ end
 -- (6,11,16,21,26,36,46) fall behind the armor from T5 on (armor 30, 40, 45; two
 -- T7 lore shields are at 36). Each lore copy gets at least the most common
 -- level of the crafted armor of its tier, read from the data (follows updates).
+-- Part of the craftedLoreItems feature.
 ---------------------------------------------------------------------------
 
-do
+if not CRAFTED_LORE then
+    log("crafted lore item levels: off (vanilla levels and crafting preview)")
+else
     local counts = {}   -- tier -> level -> count, crafted armor only
     for _, original in ipairs(item_order) do
         local info = items[original]
@@ -1447,6 +1469,9 @@ if loader.features.export then
             v.original, v.original_id, v.index, v.name, v.guid, v.id, marker, info.group, v.theme or "", tostring(info.gen), tostring(info.legendary),
             table.concat(names, '","'), table.concat(vanilla, '","'))
     end
+    -- First element: the switches the DLL needs. A manifest without this line (older
+    -- versions) means variant drops off.
+    table.insert(lines, 1, string.format('{"settings":{"variantDrops":%s}}', tostring(VARIANT_DROPS)))
     io.export("perk-variants/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")
 
     -- Pinned list for the next release: every variant built now, plus pinned
