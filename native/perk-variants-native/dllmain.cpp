@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.2.1";
+constexpr const char* kVersion = "0.2.2";
 
 // Build 1273043 client, enshrouded.exe SHA-256 d64966e2... (ShroudForge profile 26082781).
 constexpr DWORD kTimeDateStamp = 0x6AD77F0C;
@@ -86,9 +86,59 @@ bool read_u8(const uint8_t* p, uint8_t* out) {
     __try { *out = *p; return true; } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+// Per-caller call counts. The crafting UI calls the creator ~3700 times a second on
+// the main thread (caller +0x3F2258, simulated adds for every recipe), so only the
+// first kFullLines calls of each caller are logged in full; after that a line each
+// time a caller reaches 100, 1000, 10000, ... calls, and a summary at unload.
+constexpr int kMaxCallers = 64;
+constexpr uint64_t kFullLines = 20;
+struct CallerStat { uintptr_t caller; uint64_t calls; };
+CallerStat g_callers[kMaxCallers];
+int g_caller_count = 0;
+SRWLOCK g_stats_lock = SRWLOCK_INIT;
+
+// Counts the call and returns the caller's new total (0 if the table is full).
+uint64_t count_call(uintptr_t caller) {
+    AcquireSRWLockExclusive(&g_stats_lock);
+    uint64_t calls = 0;
+    int i = 0;
+    while (i < g_caller_count && g_callers[i].caller != caller) ++i;
+    if (i == g_caller_count && g_caller_count < kMaxCallers) g_callers[g_caller_count++] = {caller, 0};
+    if (i < g_caller_count) calls = ++g_callers[i].calls;
+    ReleaseSRWLockExclusive(&g_stats_lock);
+    return calls;
+}
+
+bool is_power_of_ten(uint64_t n) {
+    if (n < 100) return false;
+    while (n % 10 == 0) n /= 10;
+    return n == 1;
+}
+
+void log_caller_summary() {
+    AcquireSRWLockShared(&g_stats_lock);
+    for (int i = 0; i < g_caller_count; ++i) {
+        char text[128];
+        snprintf(text, sizeof text, "summary: caller +0x%llX %llu calls",
+                 static_cast<unsigned long long>(g_callers[i].caller), static_cast<unsigned long long>(g_callers[i].calls));
+        log_line(text);
+    }
+    ReleaseSRWLockShared(&g_stats_lock);
+}
+
 uint64_t create_item_hook(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t item_id, uint64_t count,
                           uint64_t level_ptr, uint64_t rarity_ptr, uint64_t a9) {
     uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_image_base;
+    uint64_t calls = count_call(caller);
+    if (calls > kFullLines) {
+        if (is_power_of_ten(calls)) {
+            char text[128];
+            snprintf(text, sizeof text, "caller +0x%llX reached %llu calls", static_cast<unsigned long long>(caller),
+                     static_cast<unsigned long long>(calls));
+            log_line(text);
+        }
+        return g_create_item_original(a1, a2, a3, a4, item_id, count, level_ptr, rarity_ptr, a9);
+    }
     uint32_t lv = 0;
     uint8_t ra = 0;
     bool has_lv = read_u32(reinterpret_cast<const uint32_t*>(level_ptr), &lv);
@@ -174,6 +224,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
         break;
     case DLL_PROCESS_DETACH:
         // The hook stays: the process is ending, and game threads may still be inside it.
+        log_caller_summary();
         log_line("unloaded");
         AcquireSRWLockExclusive(&g_log_lock);
         if (g_log != INVALID_HANDLE_VALUE) CloseHandle(g_log);

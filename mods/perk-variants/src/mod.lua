@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.8.7 (test worlds only; ShroudForge only, random loot vanilla, native 0.2.1 log-only loot hook).
+-- Perk Variants prototype 0.8.8 (test worlds only; ShroudForge only, random loot vanilla, native 0.2.2 log-only loot hook).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
