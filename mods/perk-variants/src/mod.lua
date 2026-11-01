@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.5 (test worlds only).
+-- Perk Variants prototype 0.6.6 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -863,6 +863,8 @@ end
 -- (inferred, to be tested).
 ---------------------------------------------------------------------------
 
+local RARITY_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5 }
+local rarity_steps = {}   -- crafted item guid -> rarity steps changed by the mod (+ up, - down)
 local CRAFTED_LORE_RARITY = "Legendary"
 do
     local changed = 0
@@ -871,6 +873,10 @@ do
             local resource = game.assets.get_resource(original, "keen::ItemInfo")
             local text = text_of(resource)
             if text:match('"rarity":"(%a+)"') ~= CRAFTED_LORE_RARITY or text:match('"generateRarity":(%a+)') ~= "false" then
+                local vanilla = text:match('"rarity":"(%a+)"')
+                if RARITY_RANK[vanilla] then
+                    rarity_steps[original] = RARITY_RANK[CRAFTED_LORE_RARITY] - RARITY_RANK[vanilla]
+                end
                 local data = resource.data
                 data.generateRarity = false -- a few copies roll their rarity (data quirk)
                 data.rarity = CRAFTED_LORE_RARITY
@@ -917,6 +923,7 @@ do
                     if level <= rule[1] then target = rule[2]; break end
                 end
                 if target ~= rarity then
+                    if RARITY_RANK[rarity] then rarity_steps[original] = RARITY_RANK[target] - RARITY_RANK[rarity] end
                     resource.data.rarity = target
                     changed = changed + 1
                     local key = rarity .. "->" .. target
@@ -1014,6 +1021,69 @@ do
         end
     end
     log(string.format("lore upgrade preview table: %d entries raised (%s)", previews, table.concat(changes, ", ")))
+end
+
+---------------------------------------------------------------------------
+-- Crafting cost follows the rarity change (developer's rule, 2026-11-01)
+--
+-- Every crafted item whose rarity the mod changed costs 25% more per rarity
+-- step up and 25% less per step down, relative to its vanilla recipe (Rare ->
+-- Epic 125%, Rare -> Legendary 150%, Rare -> Uncommon 75%). Same materials,
+-- only the amounts: rounded to the nearest whole number, never below 1.
+---------------------------------------------------------------------------
+
+local COST_PER_RARITY_STEP = 0.25
+do
+    -- Recipe index (1-based, registry order) of every output item, from text.
+    local text = text_of(single("keen::RecipeRegistryResource"))
+    local recipes_text = text:sub((text:find('"recipes":%[') or 1))
+    local recipes_of, index = {}, 0
+    for list in recipes_text:gmatch('"output":%[(.-)%]') do
+        index = index + 1
+        for g in list:gmatch('"itemRef":"([%x%-]+)"') do
+            recipes_of[g] = recipes_of[g] or {}
+            table.insert(recipes_of[g], index)
+        end
+    end
+
+    local recipes = single("keen::RecipeRegistryResource").data.recipes
+    if #recipes ~= index then
+        error(string.format("perk-variants: recipe registry has %d recipes, text parse found %d outputs", #recipes, index))
+    end
+    local changed, examples, by_factor = 0, {}, {}
+    for _, original in ipairs(item_order) do
+        local steps = rarity_steps[original]
+        if steps and steps ~= 0 then
+            local factor = 1 + COST_PER_RARITY_STEP * steps
+            for _, i in ipairs(recipes_of[original] or {}) do
+                local inputs = recipes[i].input
+                local before, after = {}, {}
+                for j = 1, #inputs do
+                    for _, field in ipairs({ "itemStack", "inputItemCategory" }) do
+                        local part = inputs[j][field]
+                        local count = part.count
+                        if count > 0 then
+                            local scaled = math.max(1, math.floor(count * factor + 0.5))
+                            if scaled ~= count then part.count = scaled end
+                            before[#before + 1] = count
+                            after[#after + 1] = scaled
+                        end
+                    end
+                end
+                changed = changed + 1
+                by_factor[factor] = (by_factor[factor] or 0) + 1
+                if #examples < 6 then
+                    examples[#examples + 1] = string.format("%s x%.2f: %s -> %s", items[original].name, factor,
+                        table.concat(before, "/"), table.concat(after, "/"))
+                end
+            end
+        end
+    end
+    local parts = {}
+    for factor, n in pairs(by_factor) do parts[#parts + 1] = string.format("x%.2f %d", factor, n) end
+    table.sort(parts)
+    log(string.format("crafting cost by rarity change: %d recipes scaled (%s)", changed, table.concat(parts, ", ")))
+    for _, e in ipairs(examples) do log("  cost example " .. e) end
 end
 
 ---------------------------------------------------------------------------
