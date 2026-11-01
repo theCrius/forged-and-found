@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.8.2 (test worlds only; ShroudForge, random loot vanilla, native DLL "hello").
+-- Perk Variants prototype 0.8.3 (test worlds only; ShroudForge, random loot vanilla, native DLL "hello", log via warn).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -112,16 +112,12 @@ local ELEMENTS = { "Fire", "Ice", "Lightning", "Poison", "Fog" }
 local NONE = game.guid.NONE
 local u32 = integer.u32
 
--- ShroudForge logs a mod's print() at DEBUG, below its default INFO level, so the
--- lines also go to <export dir>/perk-variants/startup.log. The file is rewritten on
--- every call (about 30 per launch), so it shows how far the mod got if it fails.
-local log_lines = {}
+-- ShroudForge logs a mod's print() at DEBUG, below its default INFO level, and
+-- warn() at WARN, so every line goes through warn() too. Under EML, print() reaches
+-- its log and Lua's standard warn() stays silent (warnings are off by default).
 local function log(msg)
     print("[perk-variants] " .. msg)
-    log_lines[#log_lines + 1] = msg
-    if loader.features.export then
-        pcall(io.export, "perk-variants/startup.log", table.concat(log_lines, "\n") .. "\n")
-    end
+    warn("[perk-variants] " .. msg)
 end
 
 ---------------------------------------------------------------------------
