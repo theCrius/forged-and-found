@@ -40,7 +40,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.4.0";
+constexpr const char* kVersion = "0.4.1";
 
 // Callers (return addresses) whose 8th argument is proven to be the item's rarity:
 // +0x3C0C7B chest/enemy-remains picker (Sleek Daggers, Shivs: Epic as in the tooltip),
@@ -367,13 +367,38 @@ bool install_hook(uintptr_t rva, const unsigned char (&prologue)[15], void* hook
 // Runs the original lookup; only on a miss for a marker id it looks up the original
 // name in the same table and answers "§ " + that text. A miss there too stays a miss,
 // so the resolver goes on to its next table exactly as for any unknown id.
+// 0.4.1 diagnostics: 0.4.0 installed this hook but a swapped variant showed an empty
+// name, so log whether the hook runs at all and what it does with marker ids.
+std::atomic<uint64_t> g_text_calls{0};
+std::atomic<uint64_t> g_marker_calls{0};
+constexpr uint64_t kMarkerLines = 40;
+
+void log_marker_call(uint64_t n, uintptr_t caller, uint64_t holder, uint64_t table, uint32_t id, uint32_t name_id,
+                     const char* outcome) {
+    char text[256];
+    snprintf(text, sizeof text, "marker lookup #%llu: id=%u name=%u caller=+0x%llX holder=%p table=%p -> %s",
+             static_cast<unsigned long long>(n), id, name_id, static_cast<unsigned long long>(caller),
+             reinterpret_cast<void*>(holder), reinterpret_cast<void*>(table), outcome);
+    log_line(text);
+}
+
 uint8_t text_lookup_hook(uint64_t out, uint64_t holder, uint64_t id) {
+    uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_image_base;
+    uint64_t calls = ++g_text_calls;
+    if (calls == 1 || is_power_of_ten(calls)) {
+        char text[128];
+        snprintf(text, sizeof text, "text lookup reached %llu calls (this one id=%u caller=+0x%llX)",
+                 static_cast<unsigned long long>(calls), static_cast<uint32_t>(id),
+                 static_cast<unsigned long long>(caller));
+        log_line(text);
+    }
     uint8_t found = g_text_lookup_original(out, holder, id);
     if (found || !g_markers) return found;
     auto marker = g_markers->find(static_cast<uint32_t>(id));
     if (marker == g_markers->end()) return found;
 
     uint64_t table = *reinterpret_cast<const uint64_t*>(holder + 0x20);  // one table per language
+    uint64_t marker_calls = ++g_marker_calls;
     const std::string* text = nullptr;
     AcquireSRWLockShared(&g_marker_lock);
     auto per_table = g_marker_texts->find(table);
@@ -384,12 +409,25 @@ uint8_t text_lookup_hook(uint64_t out, uint64_t holder, uint64_t id) {
     ReleaseSRWLockShared(&g_marker_lock);
     if (!text) {
         TextView name{};
-        if (!g_text_lookup_original(reinterpret_cast<uint64_t>(&name), holder, marker->second)) return 0;
+        if (!g_text_lookup_original(reinterpret_cast<uint64_t>(&name), holder, marker->second)) {
+            if (marker_calls <= kMarkerLines)
+                log_marker_call(marker_calls, caller, holder, table, marker->first, marker->second, "name missing here");
+            return 0;
+        }
         std::string rendered = kMarkerPrefix;
         rendered.append(name.text, static_cast<size_t>(name.length));
+        if (marker_calls <= kMarkerLines) {
+            char outcome[160];
+            snprintf(outcome, sizeof outcome, "rendered (%llu bytes: %.100s)", static_cast<unsigned long long>(rendered.size()),
+                     rendered.c_str());
+            log_marker_call(marker_calls, caller, holder, table, marker->first, marker->second, outcome);
+        }
         AcquireSRWLockExclusive(&g_marker_lock);
         text = &(*g_marker_texts)[table].emplace(marker->first, std::move(rendered)).first->second;  // first wins a race
         ReleaseSRWLockExclusive(&g_marker_lock);
+    }
+    else if (marker_calls <= kMarkerLines) {
+        log_marker_call(marker_calls, caller, holder, table, marker->first, marker->second, "cached");
     }
     auto view = reinterpret_cast<TextView*>(out);
     view->text = text->data();
@@ -452,6 +490,13 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     case DLL_PROCESS_DETACH:
         // The hook stays: the process is ending, and game threads may still be inside it.
         log_caller_summary();
+        if (g_markers) {
+            char text[128];
+            snprintf(text, sizeof text, "text lookup: %llu calls, %llu for marker ids",
+                     static_cast<unsigned long long>(g_text_calls.load()),
+                     static_cast<unsigned long long>(g_marker_calls.load()));
+            log_line(text);
+        }
         log_line("unloaded");
         AcquireSRWLockExclusive(&g_log_lock);
         if (g_log != INVALID_HANDLE_VALUE) CloseHandle(g_log);

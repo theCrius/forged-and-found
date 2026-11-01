@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.9.1 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
+-- Perk Variants prototype 0.9.2 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
