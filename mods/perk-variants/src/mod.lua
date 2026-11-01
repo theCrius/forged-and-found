@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.9.0 (test worlds only; ShroudForge only; random loot vanilla in data, variants via native 0.3.0 post-draw swap).
+-- Perk Variants prototype 0.9.1 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -16,8 +16,8 @@
 --   - ItemKnowledgeResource (StaticHashMap ItemId -> ItemKnowledge)
 --   - GameKnowledgeResource world/player knowledge maps (an item's ItemId is
 --     also its KnowledgeId)
---   - Name "§ <original name>" in every language: new texts added to the text
---     tables (see "Variant marker"). Beta only: needs the flag file marker.enabled.
+--   - Name "§ <original name>" in every language, rendered at runtime by the
+--     native DLL (see "Variant marker"). Beta only: needs the flag file marker.enabled.
 --
 -- Loot rule:
 --   - Random loot (RANDOM_LOOT_VARIANTS = 0, current): untouched. Variant entries
@@ -1101,22 +1101,20 @@ do
 end
 
 ---------------------------------------------------------------------------
--- Variant marker: variants are named "§ <original name>" in every language.
+-- Variant marker (beta, flag file marker.enabled): variants show as
+-- "§ <original name>" in every language, rendered at runtime by the native DLL.
 --
 -- A name is a LocaTagReference: a GUID whose game.guid.hash is a LocaTagId,
--- looked up in LocaTagCollectionResourceData.tags (sorted by id) of the
--- language's content blob. Each table is decoded (Buffer:read_resource), gets
--- one new text per item with variants (its variants share it), is re-encoded
--- and stored as new content that the collection then points at.
--- Research (0.6.7-0.6.10): no data field shows an extra tooltip line (captions
--- are ignored; the "Lore Item" line is hardcoded for the lore tag); new texts
--- show; "§" is the one candidate symbol the title font drew.
--- The marker is cosmetic, so it fails soft: all tables are prepared first, and
--- variants are renamed only if every table was committed; otherwise they keep
--- the original's name.
+-- looked up by binary search in the language's LocaTagCollectionResourceData
+-- (enshrouded.exe+0x11FA0D0). Each item with variants gets a marker GUID whose
+-- LocaTagId is in no text table, and its variants' ItemInfo.name points at it.
+-- The manifest exports markerId/nameId per variant; the DLL answers a lookup of
+-- a marker id with "§ " + the original name's text in the current language.
+-- Nothing is added to text tables or archives (0.7.x did, and under EML the
+-- archive stayed behind after uninstalling): removing the mod restores all.
+-- Without the DLL the variants' names show as missing text (visible, harmless).
 ---------------------------------------------------------------------------
 
-local MARKER = "§ "
 local LOCA_DATA = "keen::LocaTagCollectionResourceData"
 
 local function content_of(hash)
@@ -1133,14 +1131,7 @@ local function text_ids(data)
     return ids
 end
 
-local function check_ids(ids, expected, label)
-    if #ids ~= expected then error(string.format("%s: parsed %d text ids, table has %d", label, #ids, expected)) end
-    for i = 2, #ids do
-        if ids[i - 1] >= ids[i] then error(label .. ": text ids not ascending at " .. i) end
-    end
-end
-
--- Index of id in the sorted ids, or nil and the insert position.
+-- Index of id in the sorted ids, or nil.
 local function find_sorted(ids, id)
     local lo, hi = 1, #ids
     while lo <= hi do
@@ -1148,121 +1139,54 @@ local function find_sorted(ids, id)
         if ids[mid] == id then return mid end
         if ids[mid] < id then lo = mid + 1 else hi = mid - 1 end
     end
-    return nil, lo
+    return nil
 end
 
-local marks = {} -- one per item with variants: { original, old_id, guid, id }
-for _, original in ipairs(item_order) do
-    local _, first = next(variants_of[original] or {})
-    if first then
-        local name = tostring(game.assets.get_resource(first.guid, "keen::ItemInfo").data.name)
-        if name ~= NONE then
-            local guid = derive_guid(SEED .. "|name|" .. original)
-            marks[#marks + 1] = { original = original, old_id = game.guid.hash(name), guid = guid, id = game.guid.hash(guid) }
-        end
-    end
-end
-
--- Decodes one table, inserts the marked names, re-encodes it into a buffer.
--- `english` (old_id -> text) fills names a language lacks; nil for En_Us itself,
--- where a missing name drops the mark (those variants keep the original name).
-local function prepare_table(ref, label, english)
-    local data = content_of(ref.hash):read_data():read_resource(LOCA_DATA)
-    local tags = data.tags
-    local before = #tags
-    local ids = text_ids(data)
-    check_ids(ids, before, label)
-    local adds, texts, template, missing = {}, {}, nil, 0
-    for _, m in ipairs(marks) do
-        if not m.skip then
-            local at = find_sorted(ids, m.old_id)
-            local hit, pos = find_sorted(ids, m.id)
-            if hit then error(label .. ": text id " .. m.id .. " already used") end
-            local text = at and tostring(tags[at].text)
-            if at then
-                template = template or at
-            elseif english then
-                text = english[m.old_id]
-                missing = missing + 1
-            else
-                m.skip = true
-            end
-            if text then
-                texts[m.old_id] = text
-                adds[#adds + 1] = { pos = pos, at = at, id = m.id, text = MARKER .. text }
-            end
-        end
-    end
-    if #adds > 0 and not template then error(label .. ": none of the names exist") end
-    -- Insert from the highest position down so lower positions stay valid; the
-    -- entry cloned for a new text is the original name's entry (no arguments),
-    -- shifted by the insertions already made at or below it.
-    table.sort(adds, function(a, b)
-        if a.pos ~= b.pos then return a.pos > b.pos end
-        return a.id > b.id
-    end)
-    local done = {}
-    for _, a in ipairs(adds) do
-        local src = a.at or template
-        local shift = 0
-        for _, p in ipairs(done) do
-            if p <= src then shift = shift + 1 end
-        end
-        table.insert(tags, a.pos, tags[src + shift])
-        tags[a.pos].id.value = a.id
-        tags[a.pos].text = a.text
-        done[#done + 1] = a.pos
-    end
-    check_ids(text_ids(data), before + #adds, label .. " (after)")
-    local out = buffer.create(ref.hash.size + 256 * #adds + 4096)
-    out:write_resource(LOCA_DATA, data)
-    return { ref = ref, out = out, label = label, before = before, after = before + #adds, missing = missing }, texts
-end
-
--- Beta-only feature (see CLAUDE.md): on only when the beta package ships the flag
--- file `marker.enabled` in the mod folder. create_content writes a new data
--- archive (enshrouded_055.dat under EML, which never removed it again). Whether
--- ShroudForge cleans it up after uninstalling is UNVERIFIED: test before enabling.
 local MARKER_FLAG = "marker.enabled"
 local MARKER_ENABLED = io.exists(MARKER_FLAG)
+local marker_of = {} -- original GUID -> { id = marker LocaTagId, name_id = original name's LocaTagId }
 
 if not MARKER_ENABLED then
     log("marker disabled (no " .. MARKER_FLAG .. " in the mod folder)")
 else
     local ok, err = pcall(function()
+        -- Read-only check against the English table: a marker id must not be a real
+        -- text id, and the original name must exist (else "§ " + nothing).
         local coll = single("keen::LocaTagCollectionResource").data
-        local tables, english = {}, nil
+        local en
         for _, l in ipairs(coll.languages) do
-            if l.language == "En_Us" then tables[1], english = prepare_table(l.data, "En_Us", nil) end
+            if l.language == "En_Us" then en = l.data end
         end
-        if not english then error("no En_Us text table") end
-        for _, l in ipairs(coll.languages) do
-            if l.language ~= "En_Us" then tables[#tables + 1] = prepare_table(l.data, tostring(l.language), english) end
+        if not en then error("no En_Us text table") end
+        local ids = text_ids(content_of(en.hash):read_data():read_resource(LOCA_DATA))
+        for i = 2, #ids do
+            if ids[i - 1] >= ids[i] then error("En_Us text ids not ascending at " .. i) end
         end
-        tables[#tables + 1] = prepare_table(coll.keenglishData, "keenglish", english)
-        for _, t in ipairs(tables) do
-            local c = game.assets.create_content(t.out)
-            local before_bytes = t.ref.hash.size
-            t.ref.hash.size, t.ref.hash.hash0, t.ref.hash.hash1, t.ref.hash.hash2 = c.size, c.hash0, c.hash1, c.hash2
-            log(string.format("marker: %s %d -> %d texts, %d -> %d bytes%s", t.label, t.before, t.after,
-                before_bytes, c.size, t.missing > 0 and (", " .. t.missing .. " names from English") or ""))
-        end
-    end)
-    if ok then
-        local renamed, items_marked = 0, 0
-        for _, m in ipairs(marks) do
-            if not m.skip then
-                items_marked = items_marked + 1
-                for _, v in pairs(variants_of[m.original]) do
-                    game.assets.get_resource(v.guid, "keen::ItemInfo").data.name = m.guid
-                    renamed = renamed + 1
+        local renamed, marked, skipped = 0, 0, 0
+        for _, original in ipairs(item_order) do
+            local list = variants_of[original]
+            if list and #list > 0 then
+                local name = tostring(game.assets.get_resource(list[1].guid, "keen::ItemInfo").data.name)
+                local guid = derive_guid(SEED .. "|name|" .. original)
+                local id, name_id = game.guid.hash(guid), name ~= NONE and game.guid.hash(name)
+                if find_sorted(ids, id) then error("marker text id " .. id .. " is already a text id") end
+                if name_id and find_sorted(ids, name_id) then
+                    marker_of[original] = { id = id, name_id = name_id }
+                    marked = marked + 1
+                    for _, v in ipairs(list) do
+                        game.assets.get_resource(v.guid, "keen::ItemInfo").data.name = guid
+                        renamed = renamed + 1
+                    end
+                else
+                    skipped = skipped + 1
                 end
             end
         end
-        -- (the loader sandbox has no os library: time this from the log timestamps)
-        log(string.format("marker: %d variants of %d items renamed \"%s<name>\" (%d items without a name text)",
-            renamed, items_marked, MARKER, #marks - items_marked))
-    else
+        log(string.format("marker: %d variants of %d items point at marker names (%d items without an English name skipped); the native DLL renders them",
+            renamed, marked, skipped))
+    end)
+    if not ok then
+        marker_of = {}
         log("WARNING marker skipped, variants keep the original names: " .. tostring(err))
     end
 end
@@ -1633,8 +1557,12 @@ if loader.features.export then
         -- telling a variant from vanilla in game needs the vanilla perks side by side.
         for s, p in ipairs(items[v.original].perks) do vanilla[s] = perk_names[p] or p end
         local info = items[v.original]
-        lines[i] = string.format('{"original":"%s","originalId":%d,"index":%d,"name":"%s","variant":"%s","itemId":%d,"group":"%s","theme":"%s","rolledRarity":%s,"legendary":%s,"perks":["%s"],"vanilla":["%s"]}',
-            v.original, v.original_id, v.index, v.name, v.guid, v.id, info.group, v.theme or "", tostring(info.gen), tostring(info.legendary),
+        -- markerId/nameId (only with the marker on): read by the native DLL, which
+        -- renders the marker name as "§ " + the text of nameId.
+        local mark = marker_of[v.original]
+        local marker = mark and string.format(',"markerId":%d,"nameId":%d', mark.id, mark.name_id) or ""
+        lines[i] = string.format('{"original":"%s","originalId":%d,"index":%d,"name":"%s","variant":"%s","itemId":%d%s,"group":"%s","theme":"%s","rolledRarity":%s,"legendary":%s,"perks":["%s"],"vanilla":["%s"]}',
+            v.original, v.original_id, v.index, v.name, v.guid, v.id, marker, info.group, v.theme or "", tostring(info.gen), tostring(info.legendary),
             table.concat(names, '","'), table.concat(vanilla, '","'))
     end
     io.export("perk-variants/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")

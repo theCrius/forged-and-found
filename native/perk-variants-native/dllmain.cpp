@@ -4,6 +4,11 @@
 // (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
 // enemy loot, world pickups, gathering), not for moving items and not for crafting.
 //
+// 0.4.0 (marker): when the data mod's marker is on (manifest has markerId/nameId),
+// also hooks the text lookup enshrouded.exe+0x11FA0D0 and renders each variant's
+// marker name as "§ <original name>" in the current language. Nothing is written to
+// text tables or archives, so uninstalling the mod leaves nothing behind.
+//
 // 0.3.0 (swap): when a verified loot caller creates an Epic or Legendary item that has
 // variants, the item is rolled uniformly among {vanilla, variant 1..n} and the chosen
 // ItemId is passed on instead (developer's design, CLAUDE.md "Delivery design"). The
@@ -29,12 +34,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace {
 
-constexpr const char* kVersion = "0.3.0";
+constexpr const char* kVersion = "0.4.0";
 
 // Callers (return addresses) whose 8th argument is proven to be the item's rarity:
 // +0x3C0C7B chest/enemy-remains picker (Sleek Daggers, Shivs: Epic as in the tooltip),
@@ -64,15 +70,39 @@ constexpr unsigned char kCreateItemPrologue[15] = {
 using CreateItemFn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t item_id, uint64_t count,
                                   uint64_t level_ptr, uint64_t rarity_ptr, uint64_t);
 
+// Text lookup: bool lookup(TextView* out, TableHolder* holder, LocaTagId id). Binary
+// search over the 24-byte LocaTagResource entries of the table at [holder+20h]; on a
+// hit writes out = {const char* utf8, uint64 length} and returns 1. The resolver
+// (+0x11FA7C0) tries several holders in turn (+0xE0, +0x40, +0x90) until one hits.
+constexpr uintptr_t kTextLookupRva = 0x11FA0D0;
+constexpr unsigned char kTextLookupPrologue[15] = {
+    0x48, 0x89, 0x5C, 0x24, 0x08,  // mov [rsp+8], rbx
+    0x48, 0x89, 0x74, 0x24, 0x10,  // mov [rsp+10h], rsi
+    0x48, 0x89, 0x7C, 0x24, 0x18,  // mov [rsp+18h], rdi
+};
+using TextLookupFn = uint8_t (*)(uint64_t out, uint64_t holder, uint64_t id);
+struct TextView { const char* text; uint64_t length; };
+constexpr char kMarkerPrefix[] = "\xC2\xA7 ";  // "§ " in UTF-8 (the tables are UTF-8)
+
 wchar_t g_log_path[MAX_PATH];
 HANDLE g_log = INVALID_HANDLE_VALUE;
 SRWLOCK g_log_lock = SRWLOCK_INIT;
 uintptr_t g_image_base = 0;
 CreateItemFn g_create_item_original = nullptr;  // trampoline: saved prologue + jump back
+TextLookupFn g_text_lookup_original = nullptr;
 
 // Original ItemId -> its variants' ItemIds. Filled once in DllMain, read-only afterwards.
 std::unordered_map<uint32_t, std::vector<uint32_t>>* g_variants = nullptr;
 std::atomic<uint64_t> g_roll_counter{0};
+
+// Marker name LocaTagId -> the original name's LocaTagId (from the manifest; present only
+// when the data mod's marker is on). Read-only after DllMain.
+std::unordered_map<uint32_t, uint32_t>* g_markers = nullptr;
+// Rendered marker texts per (table, marker id); never freed, so pointers handed to the
+// UI stay valid for the process lifetime (a few hundred short strings per language).
+// Node-based maps: growing them never moves an existing string.
+std::unordered_map<uint64_t, std::unordered_map<uint32_t, std::string>>* g_marker_texts = nullptr;
+SRWLOCK g_marker_lock = SRWLOCK_INIT;
 
 // <game>/shroudforge/logs/perk-variants-native.log; <game> is the host exe's folder.
 bool resolve_log_path() {
@@ -252,6 +282,7 @@ bool load_variant_table(char* text, size_t text_size) {
     }
 
     auto* table = new std::unordered_map<uint32_t, std::vector<uint32_t>>();
+    auto* markers = new std::unordered_map<uint32_t, uint32_t>();
     size_t variants = 0, bad = 0;
     for (char* line = data.data(); *line;) {
         char* end = strchr(line, '\n');
@@ -266,6 +297,14 @@ bool load_variant_table(char* text, size_t text_size) {
                 (*table)[static_cast<uint32_t>(original)].push_back(static_cast<uint32_t>(variant));
                 ++variants;
             }
+            // Marker pair (only with the marker on): all variants of an item share it.
+            const char* m = strstr(line, "\"markerId\":");
+            const char* nm = strstr(line, "\"nameId\":");
+            if (m && nm) {
+                unsigned long marker = strtoul(m + 11, nullptr, 10), name = strtoul(nm + 9, nullptr, 10);
+                if (marker == 0 || name == 0 || marker == name) ++bad;
+                else (*markers)[static_cast<uint32_t>(marker)] = static_cast<uint32_t>(name);
+            }
         }
         if (!end) break;
         line = end + 1;
@@ -273,39 +312,89 @@ bool load_variant_table(char* text, size_t text_size) {
     if (variants == 0 || bad > 0) {
         snprintf(text, text_size, "variant table rejected (%zu variants, %zu bad lines)", variants, bad);
         delete table;
+        delete markers;
         return false;
     }
     g_variants = table;
-    snprintf(text, text_size, "variant table: %zu items with %zu variants", table->size(), variants);
+    if (!markers->empty()) {
+        g_markers = markers;
+        g_marker_texts = new std::unordered_map<uint64_t, std::unordered_map<uint32_t, std::string>>();
+    } else {
+        delete markers;
+    }
+    snprintf(text, text_size, "variant table: %zu items with %zu variants; %zu marker names", table->size(), variants,
+             g_markers ? g_markers->size() : 0);
     return true;
 }
 
-// Replaces the 15-byte prologue at `target` with `jmp [rip+0]; dq hook; nop` after
-// copying it into an executable trampoline that ends with a jump back to target+15.
-bool install_hook(unsigned char* target, void* hook) {
+// Replaces a 15-byte, position-independent prologue at `target` with
+// `jmp [rip+0]; dq hook; nop` after copying it into an executable trampoline that
+// ends with a jump back to target+15. Stores the trampoline (call it to run the
+// original) in *original BEFORE the jump is written, so the hook can never run
+// without it. Returns false when the bytes differ (other build, or hooked by
+// something else) or memory could not be prepared; then nothing was changed.
+template <typename Fn>
+bool install_hook(uintptr_t rva, const unsigned char (&prologue)[15], void* hook, Fn* original) {
+    auto target = reinterpret_cast<unsigned char*>(g_image_base + rva);
+    if (memcmp(target, prologue, sizeof prologue) != 0) return false;
     unsigned char* tramp = static_cast<unsigned char*>(
         VirtualAlloc(nullptr, 64, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (!tramp) return false;
-    memcpy(tramp, kCreateItemPrologue, sizeof kCreateItemPrologue);
-    unsigned char* back = tramp + sizeof kCreateItemPrologue;
+    memcpy(tramp, prologue, sizeof prologue);
+    unsigned char* back = tramp + sizeof prologue;
     back[0] = 0xFF; back[1] = 0x25; memset(back + 2, 0, 4);  // jmp qword ptr [rip+0]
-    uintptr_t resume = reinterpret_cast<uintptr_t>(target) + sizeof kCreateItemPrologue;
+    uintptr_t resume = reinterpret_cast<uintptr_t>(target) + sizeof prologue;
     memcpy(back + 6, &resume, 8);
     FlushInstructionCache(GetCurrentProcess(), tramp, 64);
 
     DWORD old = 0;
-    if (!VirtualProtect(target, sizeof kCreateItemPrologue, PAGE_EXECUTE_READWRITE, &old)) return false;
-    unsigned char patch[sizeof kCreateItemPrologue];
+    if (!VirtualProtect(target, sizeof prologue, PAGE_EXECUTE_READWRITE, &old)) {
+        VirtualFree(tramp, 0, MEM_RELEASE);
+        return false;
+    }
+    *original = reinterpret_cast<Fn>(tramp);
+    unsigned char patch[sizeof prologue];
     patch[0] = 0xFF; patch[1] = 0x25; memset(patch + 2, 0, 4);
     uintptr_t dest = reinterpret_cast<uintptr_t>(hook);
     memcpy(patch + 6, &dest, 8);
     patch[14] = 0x90;
     memcpy(target, patch, sizeof patch);
-    VirtualProtect(target, sizeof kCreateItemPrologue, old, &old);
-    FlushInstructionCache(GetCurrentProcess(), target, sizeof kCreateItemPrologue);
-
-    g_create_item_original = reinterpret_cast<CreateItemFn>(tramp);
+    VirtualProtect(target, sizeof prologue, old, &old);
+    FlushInstructionCache(GetCurrentProcess(), target, sizeof prologue);
     return true;
+}
+
+// Runs the original lookup; only on a miss for a marker id it looks up the original
+// name in the same table and answers "§ " + that text. A miss there too stays a miss,
+// so the resolver goes on to its next table exactly as for any unknown id.
+uint8_t text_lookup_hook(uint64_t out, uint64_t holder, uint64_t id) {
+    uint8_t found = g_text_lookup_original(out, holder, id);
+    if (found || !g_markers) return found;
+    auto marker = g_markers->find(static_cast<uint32_t>(id));
+    if (marker == g_markers->end()) return found;
+
+    uint64_t table = *reinterpret_cast<const uint64_t*>(holder + 0x20);  // one table per language
+    const std::string* text = nullptr;
+    AcquireSRWLockShared(&g_marker_lock);
+    auto per_table = g_marker_texts->find(table);
+    if (per_table != g_marker_texts->end()) {
+        auto cached = per_table->second.find(marker->first);
+        if (cached != per_table->second.end()) text = &cached->second;
+    }
+    ReleaseSRWLockShared(&g_marker_lock);
+    if (!text) {
+        TextView name{};
+        if (!g_text_lookup_original(reinterpret_cast<uint64_t>(&name), holder, marker->second)) return 0;
+        std::string rendered = kMarkerPrefix;
+        rendered.append(name.text, static_cast<size_t>(name.length));
+        AcquireSRWLockExclusive(&g_marker_lock);
+        text = &(*g_marker_texts)[table].emplace(marker->first, std::move(rendered)).first->second;  // first wins a race
+        ReleaseSRWLockExclusive(&g_marker_lock);
+    }
+    auto view = reinterpret_cast<TextView*>(out);
+    view->text = text->data();
+    view->length = text->size();
+    return 1;
 }
 
 void start() {
@@ -327,20 +416,25 @@ void start() {
         log_line("inactive: not the client build this DLL was written for (no hook installed)");
         return;
     }
-    auto target = reinterpret_cast<unsigned char*>(g_image_base + kCreateItemRva);
-    if (memcmp(target, kCreateItemPrologue, sizeof kCreateItemPrologue) != 0) {
-        log_line("inactive: create-item prologue differs (patched by something else?), no hook installed");
-        return;
-    }
-    // Without a valid table the hook still installs, but only logs (g_variants stays null).
+    // Without a valid table the loot hook still installs, but only logs (g_variants stays null).
     bool swapping = load_variant_table(text, sizeof text);
     log_line(text);
-    if (!install_hook(target, reinterpret_cast<void*>(&create_item_hook))) {
-        log_line("inactive: could not install the create-item hook");
-        return;
+    if (!install_hook(kCreateItemRva, kCreateItemPrologue, reinterpret_cast<void*>(&create_item_hook),
+                      &g_create_item_original)) {
+        log_line("loot hook NOT installed: create-item prologue differs (patched by something else?)");
+    } else {
+        log_line(swapping ? "loot hook installed at +0x40B4F0 (swapping Epic/Legendary loot for variants)"
+                          : "loot hook installed at +0x40B4F0 (log only: no variant table)");
     }
-    log_line(swapping ? "hook installed at +0x40B4F0 (swapping Epic/Legendary loot for variants)"
-                      : "hook installed at +0x40B4F0 (log only: no variant table)");
+    // The text lookup is hooked only when the data mod's marker is on.
+    if (g_markers) {
+        bool hooked = install_hook(kTextLookupRva, kTextLookupPrologue, reinterpret_cast<void*>(&text_lookup_hook),
+                                   &g_text_lookup_original);
+        log_line(hooked ? "marker hook installed at +0x11FA0D0 (variant names rendered as \"\xC2\xA7 <name>\")"
+                                        : "marker hook NOT installed: text-lookup prologue differs; variant names show as missing text");
+    } else {
+        log_line("marker off (no marker names in the variant table): text lookup untouched");
+    }
 }
 
 }  // namespace
