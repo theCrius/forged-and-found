@@ -1,7 +1,7 @@
 {
   "id": "perk-variants",
   "name": "Perk Variants (prototype)",
-  "version": "0.9.5",
+  "version": "0.10.0",
   "description": "PROTOTYPE, test worlds only. Adds up to 6 variants with rerolled enhancements for items that can drop as Epic or Legendary. Epic and Legendary random loot from chests, enemy remains and boss loot rolls among vanilla and its variants (native DLL); fixed chests, world items, direct enemy drops and loot tables stay vanilla. Vanilla items unchanged; crafted equipment gets rarity by item level.",
   "authors": ["Crius"],
   "dependencies": [],

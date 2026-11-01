@@ -4,6 +4,10 @@
 // (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
 // enemy loot, world pickups, gathering), not for moving items and not for crafting.
 //
+// 0.5.0 (server): the same DLL also runs in enshrouded_server.exe, which has the same
+// loot code at other addresses (kBuilds, research/server-port.md). The server rolls the
+// loot in multiplayer, so it does the swap there; it has no UI text, so no marker hooks.
+//
 // 0.4.0 (marker): when the data mod's marker is on (manifest has markerId/nameId),
 // also hooks the text lookup enshrouded.exe+0x11FA0D0 and renders each variant's
 // marker name as "§ <original name>" in the current language. Nothing is written to
@@ -17,10 +21,9 @@
 // have variants. Callers whose rarity argument is not verified (world pickups, the
 // fixed-item loop) are only logged, and the crafting UI's simulated adds are skipped.
 //
-// Safety: the hook is installed only when the host is the exact client build it was
-// written for (PE TimeDateStamp + SizeOfImage) and the target's first 15 bytes are
-// the expected ones; anything else (other build, dedicated server, another mod's
-// hook) leaves the game untouched and logs why. ShroudForge loads this DLL before
+// Safety: hooks are installed only when the host is an exact build listed in kBuilds
+// (PE TimeDateStamp + SizeOfImage) and the target's first bytes are the expected ones;
+// anything else (other build, another mod's hook) leaves the game untouched and logs why. ShroudForge loads this DLL before
 // the game entrypoint, so no game thread runs the target while it is patched.
 //
 // Log: <game>/shroudforge/logs/perk-variants-native.log. Nothing is written into the
@@ -41,27 +44,37 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.4.3";
+constexpr const char* kVersion = "0.5.0";
 
-// The only caller (return address) whose loot is swapped: +0x3C0C7B, the random part of
-// the container picker (chests, enemy remains, boss loot; 8th argument proven to be the
-// rarity: Sleek Daggers, Shivs, Epic as in the tooltip). Never swapped, by the
-// developer's design (2026-11-01): the picker's fixed items (+0x3C089D), world pickups
-// and interactions (+0x3FD556), and direct enemy drops (+0x3F9E2F: carcasses, harvest,
-// the gear an enemy carries).
-constexpr uintptr_t kSwapCallers[] = {0x3C0C7B};
-// The crafting UI's simulated adds (~3700 calls/s, main thread): never swapped or logged.
-constexpr uintptr_t kCraftingUiCaller = 0x3F2258;
 constexpr uint8_t kEpic = 3, kLegendary = 4;
 
-// Build 1273043 client, enshrouded.exe SHA-256 d64966e2... (ShroudForge profile 26082781).
-constexpr DWORD kTimeDateStamp = 0x6AD77F0C;
-constexpr DWORD kSizeOfImage = 0x2A1E000;
+// Supported executables of game build 1273043. Client and dedicated server run the same
+// loot code at different addresses (identical bytes, research/server-port.md).
+// - create_item: creates `count` of `itemId` at *level / *rarity into an inventory.
+//   9 arguments: every known caller passes 5 on the stack ([rsp+20h]..[rsp+40h]).
+//   Verified live on the client (2026-11-01): Sleek Daggers -> level 15, rarity 3 (Epic).
+// - swap_caller: the only caller (return address) whose loot is swapped, the random part
+//   of the container picker (chests, enemy remains, boss loot; 8th argument proven to be
+//   the rarity on the client). Never swapped, by the developer's design (2026-11-01): the
+//   picker's fixed items, world pickups and interactions, and direct enemy drops
+//   (client +0x3C089D, +0x3FD556, +0x3F9E2F).
+// - crafting_ui: the client crafting UI's simulated adds (~3700 calls/s, main thread),
+//   never looked up; 0 = none (the server has no UI).
+// - find_entry / text_lookup: marker hooks; 0 = no UI text in this process.
+struct Build {
+    const char* name;
+    DWORD stamp, size;  // PE TimeDateStamp, SizeOfImage
+    uintptr_t create_item, swap_caller, crafting_ui, find_entry, text_lookup;
+};
+constexpr Build kBuilds[] = {
+    // enshrouded.exe SHA-256 d64966e2... (ShroudForge profile 26082781)
+    {"client", 0x6AD77F0C, 0x2A1E000, 0x40B4F0, 0x3C0C7B, 0x3F2258, 0x11FA020, 0x11FA0D0},
+    // enshrouded_server.exe SHA-256 d7baa768... (ShroudForge profile 26083076); matched
+    // statically (create_item, picker call), not yet verified live
+    {"dedicated server", 0x6AD77F14, 0x1DD1000, 0x1AC790, 0x165F1B, 0, 0, 0},
+};
+const Build* g_build = nullptr;
 
-// Creates `count` of `itemId` at *level / *rarity into an inventory. 9 arguments:
-// every known caller passes 5 on the stack ([rsp+20h]..[rsp+40h]). Verified live
-// (2026-11-01): Sleek Daggers -> level 15, rarity 3 (Epic); Scrap Shield -> 18, 2 (Rare).
-constexpr uintptr_t kCreateItemRva = 0x40B4F0;
 constexpr unsigned char kCreateItemPrologue[15] = {
     0x4C, 0x89, 0x4C, 0x24, 0x20,  // mov [rsp+20h], r9
     0x48, 0x89, 0x54, 0x24, 0x10,  // mov [rsp+10h], rdx
@@ -74,11 +87,10 @@ constexpr unsigned char kCreateItemPrologue[15] = {
 using CreateItemFn = uint64_t (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t item_id, uint64_t count,
                                   uint64_t level_ptr, uint64_t rarity_ptr, uint64_t);
 
-// Text lookup: bool lookup(TextView* out, TableHolder* holder, LocaTagId id). Binary
-// search over the 24-byte LocaTagResource entries of the table at [holder+20h]; on a
-// hit writes out = {const char* utf8, uint64 length} and returns 1. The resolver
-// (+0x11FA7C0) tries several holders in turn (+0xE0, +0x40, +0x90) until one hits.
-constexpr uintptr_t kTextLookupRva = 0x11FA0D0;
+// Text lookup (client +0x11FA0D0): bool lookup(TextView* out, TableHolder* holder,
+// LocaTagId id). Binary search over the 24-byte LocaTagResource entries of the table at
+// [holder+20h]; on a hit writes out = {const char* utf8, uint64 length} and returns 1.
+// The resolver (+0x11FA7C0) tries several holders in turn (+0xE0, +0x40, +0x90).
 constexpr unsigned char kTextLookupPrologue[15] = {
     0x48, 0x89, 0x5C, 0x24, 0x08,  // mov [rsp+8], rbx
     0x48, 0x89, 0x74, 0x24, 0x10,  // mov [rsp+10h], rsi
@@ -86,10 +98,10 @@ constexpr unsigned char kTextLookupPrologue[15] = {
 };
 using TextLookupFn = uint8_t (*)(uint64_t out, uint64_t holder, uint64_t id);
 struct TextView { const char* text; uint64_t length; };
-// Entry lookup: bool find(const LocaEntry** out, TableHolder* holder, LocaTagId id). The
-// same binary search, but returns the table entry itself; the resolver +0x11FA4F0
-// (holders +0xE0, +0x90, +0x40) uses it, and the UI reads names through that path.
-constexpr uintptr_t kFindEntryRva = 0x11FA020;
+// Entry lookup (client +0x11FA020): bool find(const LocaEntry** out, TableHolder* holder,
+// LocaTagId id). The same binary search, but returns the table entry itself; the
+// resolver +0x11FA4F0 (holders +0xE0, +0x90, +0x40) uses it, and the UI reads names
+// through that path.
 constexpr unsigned char kFindEntryPrologue[14] = {
     0x48, 0x89, 0x5C, 0x24, 0x08,  // mov [rsp+8], rbx
     0x48, 0x89, 0x7C, 0x24, 0x10,  // mov [rsp+10h], rdi
@@ -210,13 +222,6 @@ uint64_t splitmix64(uint64_t x) {
     return x ^ (x >> 31);
 }
 
-bool is_swap_caller(uintptr_t caller) {
-    for (uintptr_t c : kSwapCallers) {
-        if (c == caller) return true;
-    }
-    return false;
-}
-
 // Decides which ItemId to forward for an item that has variants. Returns the
 // (possibly unchanged) 64-bit slot; only its low 32 bits are the ItemId.
 uint64_t roll_item(uint64_t item_id, uint64_t rarity_ptr, uintptr_t caller, const std::vector<uint32_t>& variants) {
@@ -224,7 +229,7 @@ uint64_t roll_item(uint64_t item_id, uint64_t rarity_ptr, uintptr_t caller, cons
     uint8_t ra = 0;
     bool has_ra = read_u8(reinterpret_cast<const uint8_t*>(rarity_ptr), &ra);
     char text[256];
-    if (!is_swap_caller(caller)) {
+    if (caller != g_build->swap_caller) {
         snprintf(text, sizeof text, "not swapped (caller +0x%llX is not random container loot): item=%u rarity byte=%s%u",
                  static_cast<unsigned long long>(caller), item, has_ra ? "" : "?", ra);
         log_line(text);
@@ -251,7 +256,7 @@ uint64_t create_item_hook(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, ui
     uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress()) - g_image_base;
     uint64_t calls = count_call(caller);
     uint64_t forward_id = item_id;
-    if (caller != kCraftingUiCaller && g_variants) {
+    if (caller != g_build->crafting_ui && g_variants) {
         auto it = g_variants->find(static_cast<uint32_t>(item_id));
         if (it != g_variants->end()) forward_id = roll_item(item_id, rarity_ptr, caller, it->second);
     }
@@ -514,32 +519,42 @@ void start() {
              kVersion, name, GetCurrentProcessId(), static_cast<unsigned long>(stamp), static_cast<unsigned long>(size));
     log_line(text);
 
-    if (stamp != kTimeDateStamp || size != kSizeOfImage) {
-        log_line("inactive: not the client build this DLL was written for (no hook installed)");
+    for (const Build& b : kBuilds) {
+        if (stamp == b.stamp && size == b.size) g_build = &b;
+    }
+    if (!g_build) {
+        log_line("inactive: not a game build this DLL was written for (no hook installed)");
         return;
     }
+    snprintf(text, sizeof text, "build: %s", g_build->name);
+    log_line(text);
     // Without a valid table the loot hook still installs, but only logs (g_variants stays null).
     bool swapping = load_variant_table(text, sizeof text);
     log_line(text);
-    if (!install_hook(kCreateItemRva, kCreateItemPrologue, reinterpret_cast<void*>(&create_item_hook),
+    if (!install_hook(g_build->create_item, kCreateItemPrologue, reinterpret_cast<void*>(&create_item_hook),
                       &g_create_item_original)) {
         log_line("loot hook NOT installed: create-item prologue differs (patched by something else?)");
     } else {
-        log_line(swapping ? "loot hook installed at +0x40B4F0 (swapping Epic/Legendary loot for variants)"
-                          : "loot hook installed at +0x40B4F0 (log only: no variant table)");
+        snprintf(text, sizeof text, "loot hook installed at +0x%llX (%s; swap caller +0x%llX)",
+                 static_cast<unsigned long long>(g_build->create_item),
+                 swapping ? "swapping Epic/Legendary loot for variants" : "log only: no variant table",
+                 static_cast<unsigned long long>(g_build->swap_caller));
+        log_line(text);
     }
-    // Both text lookups are hooked only when the data mod's marker is on. The entry hook
-    // goes first: g_find_entry must be set before either hook can build a marker.
-    if (g_markers) {
-        bool entry = install_hook(kFindEntryRva, kFindEntryPrologue, reinterpret_cast<void*>(&find_entry_hook),
+    // Both text lookups are hooked only when the data mod's marker is on and this process
+    // shows text. The entry hook goes first: g_find_entry must be set before either hook
+    // can build a marker.
+    if (g_markers && g_build->find_entry && g_build->text_lookup) {
+        bool entry = install_hook(g_build->find_entry, kFindEntryPrologue, reinterpret_cast<void*>(&find_entry_hook),
                                   &g_find_entry_original);
-        g_find_entry = entry ? g_find_entry_original : reinterpret_cast<TextLookupFn>(g_image_base + kFindEntryRva);
-        log_line(entry ? "marker entry hook installed at +0x11FA020 (variant names rendered as \"\xC2\xA7 <name>\")"
+        g_find_entry = entry ? g_find_entry_original : reinterpret_cast<TextLookupFn>(g_image_base + g_build->find_entry);
+        log_line(entry ? "marker entry hook installed (variant names rendered as \"\xC2\xA7 <name>\")"
                        : "marker entry hook NOT installed: entry-lookup prologue differs; variant names show as missing text");
-        bool text_path = install_hook(kTextLookupRva, kTextLookupPrologue, reinterpret_cast<void*>(&text_lookup_hook),
-                                      &g_text_lookup_original);
-        log_line(text_path ? "marker text hook installed at +0x11FA0D0"
-                      : "marker text hook NOT installed: text-lookup prologue differs");
+        bool text_path = install_hook(g_build->text_lookup, kTextLookupPrologue,
+                                      reinterpret_cast<void*>(&text_lookup_hook), &g_text_lookup_original);
+        log_line(text_path ? "marker text hook installed" : "marker text hook NOT installed: text-lookup prologue differs");
+    } else if (g_markers) {
+        log_line("marker: this process shows no text (dedicated server), text lookup untouched");
     } else {
         log_line("marker off (no marker names in the variant table): text lookup untouched");
     }

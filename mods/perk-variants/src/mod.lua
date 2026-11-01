@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.9.5 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
+-- Perk Variants prototype 0.10.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -96,6 +96,13 @@ local u32 = integer.u32
 -- shroudforge.log.info logs at INFO, ShroudForge's default level (print() would be
 -- logged at DEBUG and dropped). Lines land in <game>/shroudforge/logs.
 local function log(msg) shroudforge.log.info("[perk-variants] " .. msg) end
+
+-- The dedicated server (enshrouded_server.exe) has no UI, so its data may lack icon
+-- textures, UI bundles and text tables. It builds the same variants, registrations
+-- and crafting changes as the client (the server creates loot and crafted items in
+-- multiplayer) and skips only the UI parts: icon checks and the marker.
+local IS_SERVER = loader.is_server == true
+log("process: " .. (IS_SERVER and "dedicated server (UI checks and marker skipped)" or "client"))
 
 ---------------------------------------------------------------------------
 -- Deterministic helpers
@@ -762,7 +769,7 @@ for _, original in ipairs(item_order) do
     local seen = { [table.concat(info.perks, ",")] = true } -- never duplicate vanilla
     local list = {}
     local source = game.assets.get_resource(original, "keen::ItemInfo")
-    if not game.assets.get_resource(original, "keen::UiTextureResource", 0) then
+    if not IS_SERVER and not game.assets.get_resource(original, "keen::UiTextureResource", 0) then
         error("perk-variants: no icon texture for " .. info.name)
     end
 
@@ -1125,7 +1132,9 @@ local MARKER_FLAG = "marker.enabled"
 local MARKER_ENABLED = io.exists(MARKER_FLAG)
 local marker_of = {} -- original GUID -> { id = marker LocaTagId, name_id = original name's LocaTagId }
 
-if not MARKER_ENABLED then
+if IS_SERVER then
+    log("marker skipped (dedicated server: names are rendered by each client)")
+elseif not MARKER_ENABLED then
     log("marker disabled (no " .. MARKER_FLAG .. " in the mod folder)")
 else
     local ok, err = pcall(function()
@@ -1364,9 +1373,19 @@ for _, original in ipairs(item_order) do
 end
 for _, v in ipairs(variants) do
     -- Variants show the texture named by their objectId, i.e. the original's.
-    if not game.assets.get_resource(v.original, "keen::UiTextureResource", 0) then
+    if not IS_SERVER and not game.assets.get_resource(v.original, "keen::UiTextureResource", 0) then
         error("perk-variants: original of " .. v.name .. " has no icon texture")
     end
+end
+
+-- Client and server must build the same variants (ItemIds and perks per slot), or a
+-- player would see other enhancements than the server applies. Compare this line in
+-- shroudforge-client.log and shroudforge-server.log.
+do
+    local parts = {}
+    for i, v in ipairs(variants) do parts[i] = v.id .. ":" .. table.concat(v.perks, ",") end
+    log(string.format("variant table fingerprint: %s (%d variants)", hex8(hasher.fnv1a32(table.concat(parts, ";"))),
+        #variants))
 end
 
 do
