@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.6.3 (test worlds only).
+-- Perk Variants prototype 0.6.4 (test worlds only).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -882,35 +882,53 @@ do
 end
 
 ---------------------------------------------------------------------------
--- Crafted armor sets at Epic (developer, 2026-11-01)
+-- Crafted equipment rarity by base level (developer's rule, 2026-11-01)
 --
--- Armor the artisans craft (recipe outputs named Armor_*) has a fixed rarity;
--- most sets are Rare with 5 perks defined, of which Rare shows 3. Those become
--- Epic (4 perks). Crafted armor is a separate item type from loot armor
--- (*_Loot) and never gets variants, so loot is unaffected. Sets with fewer
--- than 4 perks would gain nothing and stay Rare; Common/Uncommon sets stay.
+-- Non-lore armor, shields and weapons the artisans craft (recipe outputs:
+-- Armor_*, Shield_*, Weapon_*, and non-lore Craft_* such as the Chinese New
+-- Year event weapons) get their rarity from their base item level: up to 5
+-- Common, up to 10 Uncommon, up to 15 Rare, above that Epic. Already Legendary
+-- crafted items (Vorgoth set) stay Legendary. Crafted items are separate types
+-- from loot items (*_Loot) and never get variants, so loot is unaffected.
+-- This lowers T1 (level 5, vanilla Uncommon) and T2 (level 10, vanilla Rare)
+-- by one step, as the developer specified.
 ---------------------------------------------------------------------------
 
-local CRAFTED_ARMOR_FROM, CRAFTED_ARMOR_TO = "Rare", "Epic"
+local CRAFTED_RARITY_BY_LEVEL = { { 5, "Common" }, { 10, "Uncommon" }, { 15, "Rare" }, { math.huge, "Epic" } }
 local crafted = {}   -- GUIDs of every recipe output
 for list in text_of(single("keen::RecipeRegistryResource")):gmatch('"output":%[(.-)%]') do
     for g in list:gmatch('"itemRef":"([%x%-]+)"') do crafted[g] = true end
 end
 do
-    local changed = 0
+    local changed, moves = 0, {}
     for _, original in ipairs(item_order) do
         local info = items[original]
-        if crafted[original] and info.name:find("^Armor_") and not info.gen then
-            local defined = 0
-            for _, p in ipairs(info.perks) do if p ~= NONE then defined = defined + 1 end end
+        local n = info.name
+        local equipment = n:find("^Armor_") or n:find("^Shield_") or n:find("^Weapon_")
+            or (n:find("^Craft_") and not n:find("_Lore_"))
+        if crafted[original] and equipment and not info.gen then
             local resource = game.assets.get_resource(original, "keen::ItemInfo")
-            if defined >= 4 and text_of(resource):match('"rarity":"(%a+)"') == CRAFTED_ARMOR_FROM then
-                resource.data.rarity = CRAFTED_ARMOR_TO
-                changed = changed + 1
+            local text = text_of(resource)
+            local level = tonumber(text:match('"itemLevelRange":{"minLevel":(%d+)'))
+            local rarity = text:match('"rarity":"(%a+)"')
+            if level and rarity and rarity ~= "Legendary" then
+                local target
+                for _, rule in ipairs(CRAFTED_RARITY_BY_LEVEL) do
+                    if level <= rule[1] then target = rule[2]; break end
+                end
+                if target ~= rarity then
+                    resource.data.rarity = target
+                    changed = changed + 1
+                    local key = rarity .. "->" .. target
+                    moves[key] = (moves[key] or 0) + 1
+                end
             end
         end
     end
-    log(string.format("crafted armor: %d pieces set from %s to %s", changed, CRAFTED_ARMOR_FROM, CRAFTED_ARMOR_TO))
+    local parts = {}
+    for key, count in pairs(moves) do parts[#parts + 1] = key .. " " .. count end
+    table.sort(parts)
+    log(string.format("crafted equipment rarity by level: %d items changed (%s)", changed, table.concat(parts, ", ")))
 end
 
 ---------------------------------------------------------------------------
