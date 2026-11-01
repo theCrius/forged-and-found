@@ -1,10 +1,12 @@
 // perk-variants-native: the native half of the perk-variants mod.
 //
-// 0.1.0 ("hello"): proves that ShroudForge loads this DLL from the mod package
+// 0.1.1 ("hello"): proves that ShroudForge loads this DLL from the mod package
 // (native-plugin.ini) and into which process. It hooks nothing; it appends one
-// line per load/unload to <mod folder>/perk-variants-native.log, naming the host
-// executable and the PE identity of its build (TimeDateStamp, SizeOfImage), which
-// the loot hook will later check before touching anything.
+// line per load/unload to <game>/shroudforge/logs/perk-variants-native.log, naming
+// the host executable and the PE identity of its build (TimeDateStamp,
+// SizeOfImage), which the loot hook will later check before touching anything.
+// The log must not live in the mod folder: ShroudForge fingerprints the package,
+// so a file written there marks the mod as changed ("restart required", 0.1.0).
 //
 // Only kernel32 and the static CRT are used from DllMain (loader lock held).
 
@@ -14,21 +16,20 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.1.0";
+constexpr const char* kVersion = "0.1.1";
 
 wchar_t g_log_path[MAX_PATH];
 
-// <mod folder>/perk-variants-native.log, where this DLL sits in <mod folder>/bin/.
-bool resolve_log_path(HMODULE self) {
+// <game>/shroudforge/logs/perk-variants-native.log; <game> is the host exe's folder
+// (game or dedicated server), where ShroudForge keeps its own logs.
+bool resolve_log_path() {
     wchar_t path[MAX_PATH];
-    DWORD n = GetModuleFileNameW(self, path, MAX_PATH);
+    DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
     if (n == 0 || n >= MAX_PATH) return false;
-    for (int strip = 0; strip < 2; ++strip) {  // file name, then "bin"
-        wchar_t* slash = wcsrchr(path, L'\\');
-        if (!slash) return false;
-        *slash = L'\0';
-    }
-    return swprintf(g_log_path, MAX_PATH, L"%s\\perk-variants-native.log", path) > 0;
+    wchar_t* slash = wcsrchr(path, L'\\');
+    if (!slash) return false;
+    *slash = L'\0';
+    return swprintf(g_log_path, MAX_PATH, L"%s\\shroudforge\\logs\\perk-variants-native.log", path) > 0;
 }
 
 void log_line(const char* text) {
@@ -74,7 +75,7 @@ BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
     switch (reason) {
     case DLL_PROCESS_ATTACH:
         DisableThreadLibraryCalls(module);
-        if (resolve_log_path(module)) log_host("loaded");
+        if (resolve_log_path()) log_host("loaded");
         break;
     case DLL_PROCESS_DETACH:
         log_host("unloaded");
