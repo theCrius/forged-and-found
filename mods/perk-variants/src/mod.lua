@@ -1,4 +1,4 @@
--- Perk Variants prototype 0.9.3 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
+-- Perk Variants prototype 0.9.4 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -19,25 +19,15 @@
 --   - Name "§ <original name>" in every language, rendered at runtime by the
 --     native DLL (see "Variant marker"). Beta only: needs the flag file marker.enabled.
 --
--- Loot rule:
---   - Random loot (RANDOM_LOOT_VARIANTS = 0, current): untouched. Variant entries
---     carry no labels, so they never enter the 1024-entry candidate list.
---   - Random loot (RANDOM_LOOT_VARIANTS > 0, crashes): each variant's loot entry carries the original's labels with
---     the top labeled level's weights divided by the variant count. Items whose
---     rarity is rolled at drop: variant entries allow only Epic/Legendary and
---     the original keeps Common/Uncommon/Rare (both UNVERIFIED, see the loot
---     pool section). Items with a fixed Epic/Legendary rarity drop only as
---     variants (original's entry gets empty labelGroups, a state vanilla uses
---     for items that never drop randomly).
---     UNVERIFIED ASSUMPTION: label weights multiply along a branch of the label
---     tree. If they add up instead, variants drop somewhat more often than
---     vanilla. Verify (reverse engineer the loot picker) before release.
---   - Preset inventories (fixed chests etc.), fixed-rarity items only: in
---     selector groups a perk-item stack becomes one stack per variant, weight
---     divided by the count; in plain groups the stack is retargeted to one
---     variant, picked in turn (a child selector group gave nothing on pickup in
---     0.2.6). Rolled-rarity items stay vanilla there (no rarity field in presets).
--- Not covered: enemy-carried weapons (enemy setup references the item directly).
+-- Loot (developer's design, 2026-11-01): this script changes no loot data. All
+-- loot tables, fixed chests and world items stay vanilla; variant loot entries
+-- carry no labels, so random loot never picks them (adding them overflowed the
+-- picker's 1024-entry candidate list, research/loot-candidate-cap.md). Variants
+-- reach players only through the native DLL: after the game has picked an item
+-- and its rarity in random loot (chests, enemy remains, enemy drops), an Epic or
+-- Legendary item with variants is rolled among {vanilla, its variants}. Fixed
+-- chest contents, world pickups and anything obtained by interacting with an
+-- object are never swapped: a specific item placed there is intended.
 --
 -- Determinism: variant GUIDs derive only from the original GUID, the variant
 -- index and SEED (ItemId = game.guid.hash(GUID)), so variant k of an item has
@@ -74,18 +64,6 @@ local ROLL_SEED = "perk-variants/rolls-v1" -- rolls of items not in the pinned l
 -- variants must stay within what is known to start: 4795 worked (0.2.6/0.2.9);
 -- 9579 overflowed a ~4 MiB buffer during zstd decompression (cause unknown).
 local MAX_VARIANTS = 6
--- Only the first RANDOM_LOOT_VARIANTS variants of an item carry random-loot labels;
--- the rest drop from presets only.
--- 0 = random loot stays vanilla: variants get no labels and originals keep their
--- entries unchanged. The random-loot picker collects a rolled label's equipment
--- entries into a fixed 1024-entry list (research/loot-candidate-cap.md); vanilla's
--- busiest label already holds 609, so even 1 variant entry per item overflows 20
--- labels and crashes (0.7.0-0.7.2). Variants are meant to come from a native
--- post-draw swap instead (planned), and from presets until then.
-local RANDOM_LOOT_VARIANTS = 0
--- TEST switch: preset entries that always spawn drop the original AND a variant,
--- so both can be compared side by side. false = normal behaviour (variant only).
-local PAIR_TEST = false
 local ROLL_ATTEMPTS = 12                -- rolls tried per variant (theme) to find an acceptable one
 local MAX_SAME_PERK = 2                 -- the same perk at most twice on one item (skills: once)
 -- Families (first word of the perk name, with a few merged); a theme needs up to
@@ -1192,12 +1170,15 @@ else
 end
 
 ---------------------------------------------------------------------------
--- Item registry + random loot pool
+-- Item registry + loot pool
 --
 -- ItemRegistryResource.itemRefs/dbgNames and LootableItemsResource.items are
 -- parallel arrays (verified: items[i].itemId == hash(itemRefs[i]) for all 4207
 -- vanilla items). The game indexes them by registry position, so every variant
--- appended to the registry gets its loot entry at the same position.
+-- appended to the registry gets its loot entry at the same position. A variant's
+-- entry is a clone of its original's without labels (random loot never picks it)
+-- and, for items whose rarity is rolled at drop, allows only Epic/Legendary.
+-- The originals' entries are not changed.
 ---------------------------------------------------------------------------
 
 -- ItemIds of all loot entries in order, read from text (no live references).
@@ -1205,16 +1186,6 @@ local function loot_item_ids(loot)
     local ids = {}
     for id in tostring(loot.items):gmatch('{"itemId":{"value":(%d+)}') do ids[#ids + 1] = tonumber(id) end
     return ids
-end
-
--- Divides the weights of the top labeled level of each branch by n (see the
--- UNVERIFIED ASSUMPTION in the header). Works on a live view.
-local function scale_label_weights(group, n)
-    if #group.labels > 0 then
-        for _, label in ipairs(group.labels) do label.weight = label.weight / n end
-        return
-    end
-    for _, child in ipairs(group.childGroups) do scale_label_weights(child, n) end
 end
 
 do
@@ -1227,26 +1198,16 @@ do
     local loot_index = {}
     for i, id in ipairs(ids) do loot_index[id] = i end
 
-    -- Rarity split for items whose rarity is rolled at drop: variant entries allow
-    -- only Epic/Legendary, the original keeps Common/Uncommon/Rare. UNVERIFIED
-    -- ASSUMPTION: the picker rolls a rarity first (globalRarityDropRates) and then
-    -- picks among entries whose `rarities` mask allows it, so the original keeps
-    -- its full weight and the variants share it (weights / n). Items with a fixed
-    -- Epic/Legendary rarity drop only as variants (original's labels cleared).
-    local LOW, HIGH = { Common = true, Uncommon = true, Rare = true }, { Epic = true, Legendary = true }
-    local function mask_of(entry)
-        local names = {}
-        for n in ((tostring(entry):match('"rarities":%[(.-)%]')) or ""):gmatch('"(%a+)"') do names[#names + 1] = n end
-        if #names == 0 then names = { "Common", "Uncommon", "Rare", "Epic", "Legendary" } end
-        return names
-    end
-    local function keep(names, set)
-        local out = {}
-        for _, n in ipairs(names) do if set[n] then out[#out + 1] = n end end
-        return out
+    -- Epic/Legendary part of an entry's rarity mask (an empty mask allows all five).
+    local function epic_legendary(entry)
+        local listed, out = false, {}
+        for n in ((tostring(entry):match('"rarities":%[(.-)%]')) or ""):gmatch('"(%a+)"') do
+            listed = true
+            if n == "Epic" or n == "Legendary" then out[#out + 1] = n end
+        end
+        return listed and out or { "Epic", "Legendary" }
     end
 
-    local swapped, split = 0, 0
     for _, original in ipairs(item_order) do
         local list = variants_of[original]
         if #list > 0 then
@@ -1256,11 +1217,8 @@ do
             local original_entry = loot.items[i]
             local labels = original_entry.labelGroups
             local has_labels = #labels.labels > 0 or #labels.childGroups > 0
-            local random_drop = has_labels and RANDOM_LOOT_VARIANTS > 0
-            local labeled = math.min(#list, RANDOM_LOOT_VARIANTS)
-            local mask = mask_of(original_entry)
-            local low, high = keep(mask, LOW), keep(mask, HIGH)
-            local first -- index of variant 1's entry; variants 2..n clone it (scaled weights and mask included)
+            local high = epic_legendary(original_entry)
+            local first -- index of variant 1's entry; variants 2..n clone it (cleared labels and mask included)
             for k, v in ipairs(list) do
                 table.insert(reg.itemRefs, v.guid)
                 table.insert(reg.dbgNames, v.name)
@@ -1269,110 +1227,14 @@ do
                 entry.itemId.value = v.id
                 if k == 1 then
                     first = #loot.items
-                    if random_drop then scale_label_weights(entry.labelGroups, labeled) end
                     if info.gen and #high > 0 then entry.rarities = high end
-                    -- Random loot off: variant 1 (and its clones) carries no labels.
-                    if has_labels and not random_drop then entry.labelGroups = { labels = {}, childGroups = {} } end
-                elseif k > labeled and random_drop then
-                    entry.labelGroups = { labels = {}, childGroups = {} } -- presets only
-                end
-            end
-            if random_drop then
-                if info.gen and #low > 0 then
-                    original_entry.rarities = low
-                    split = split + 1
-                else
-                    original_entry.labelGroups = { labels = {}, childGroups = {} }
-                    swapped = swapped + 1
+                    if has_labels then entry.labelGroups = { labels = {}, childGroups = {} } end
                 end
             end
         end
     end
-    log(string.format("registry + loot pool: appended %d variants; random loot: %d items drop only as variants, %d split (original Common-Rare, variants Epic/Legendary)",
-        #variants, swapped, split))
-end
-
----------------------------------------------------------------------------
--- Preset inventories (fixed chests etc.)
---
--- DefaultInventoryResource.rootGroup is a tree of groups { isSelector, stacks,
--- groups, lootLabels }; stacks are ItemStackInfoResource { itemRef, item,
--- countMin, countMax, spawnProbability, weight, lootLabelsId }.
----------------------------------------------------------------------------
-
-do
-    -- Preset stacks have no rarity field: an item whose rarity is rolled at drop
-    -- would make a fixed spot yield variants at any rarity (or, with the variants'
-    -- rarity restriction, always Epic/Legendary). So presets keep vanilla items
-    -- for those; only items with a fixed Epic/Legendary rarity become variants.
-    local by_guid = {}
-    for original, list in pairs(variants_of) do
-        if #list > 0 and not items[original].gen then by_guid[original] = list end
-    end
-    local in_selectors, in_plain, touched = 0, 0, 0
-
-    local function retarget(stack, v, weight)
-        stack.itemRef = v.guid
-        stack.item.value = v.id
-        stack.weight = weight
-    end
-
-    local function walk(group)
-        local count = 0
-        for _, child in ipairs(group.groups) do count = count + walk(child) end
-        -- Walk stacks backwards so inserting/removing at index i keeps earlier indices valid.
-        for i = #group.stacks, 1, -1 do
-            local list = by_guid[group.stacks[i].itemRef]
-            if list then
-                local n = #list
-                if group.isSelector then
-                    -- One entry is picked by weight: split the original's weight across its variants.
-                    local weight = group.stacks[i].weight / n
-                    for k = n, 2, -1 do
-                        table.insert(group.stacks, i + 1, group.stacks[i]) -- clone of the untouched original
-                        retarget(group.stacks[i + 1], list[k], weight)
-                    end
-                    retarget(group.stacks[i], list[1], weight)
-                    in_selectors = in_selectors + 1
-                elseif PAIR_TEST then
-                    -- TEST: every entry spawns, so keep the original and add one variant next
-                    -- to it (as 0.1.4 did): each such spot drops a vanilla/variant pair for a
-                    -- side-by-side check. Prefer a variant whose slot 1 differs from vanilla,
-                    -- the only slot a common drop shows.
-                    in_plain = in_plain + 1
-                    local vanilla_first = items[group.stacks[i].itemRef].perks[1]
-                    local pick = list[1]
-                    for _, v in ipairs(list) do
-                        if v.perks[1] ~= vanilla_first then pick = v; break end
-                    end
-                    table.insert(group.stacks, i + 1, group.stacks[i]) -- clone of the untouched original
-                    retarget(group.stacks[i + 1], pick, group.stacks[i].weight)
-                else
-                    -- Every entry spawns: retarget the stack to one variant, taking the
-                    -- variants in turn across all plain stacks (deterministic for a given
-                    -- game build). 0.2.0-0.2.6 replaced the stack by a child selector group
-                    -- with one stack per variant; the ground sword in the starting area then
-                    -- gave nothing on pickup (0.2.6). A direct retarget worked in 0.1.5.
-                    in_plain = in_plain + 1
-                    local stack = group.stacks[i]
-                    retarget(stack, list[(in_plain - 1) % n + 1], stack.weight)
-                end
-                count = count + 1
-            end
-        end
-        return count
-    end
-
-    for _, r in ipairs(game.assets.get_resources_by_type("keen::ecs::DefaultInventoryResource")) do
-        -- Cheap read-only pre-check so untouched presets are not touched at all.
-        local relevant = false
-        for g in text_of(r):gmatch('"itemRef":"([%x%-]+)"') do
-            if by_guid[g] then relevant = true; break end
-        end
-        if relevant and walk(r.data.rootGroup) > 0 then touched = touched + 1 end
-    end
-    log(string.format("presets: %d inventories; %d stacks split in selector groups, %d plain stacks %s",
-        touched, in_selectors, in_plain, PAIR_TEST and "given a variant next to the original (PAIR_TEST)" or "retargeted"))
+    log(string.format("registry + loot pool: appended %d unlabeled variant entries (loot tables and presets stay vanilla)",
+        #variants))
 end
 
 ---------------------------------------------------------------------------
