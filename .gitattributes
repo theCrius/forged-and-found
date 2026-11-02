@@ -1,2 +1,5 @@
+# Text files are checked out with LF everywhere (also on the Windows CI machine), so the
+# release zip contains exactly the bytes that were tested.
+* text=auto eol=lf
 # Shipped data whose bytes the mod re-exports and compares: keep exactly as written.
 mods/forged-and-found/data/pinned.txt -text
