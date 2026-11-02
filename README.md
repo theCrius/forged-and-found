@@ -51,7 +51,9 @@ own game; each player decides for themselves, and it has no effect on a server.
 
 ## Install
 
-1. Download `forged-and-found-<version>.zip` from the [releases](../../releases).
+1. Download the newest version:
+   [forged-and-found.zip](https://github.com/theCrius/forged-and-found/releases/latest/download/forged-and-found.zip)
+   (always the latest release; older versions are on the [releases](../../releases) page).
 2. Copy its `forged-and-found` folder into `<game>/mods/` (next to `enshrouded.exe`).
 3. Start the game, open the ShroudForge mod list and switch on the features you want.
    Changing a switch needs a restart.

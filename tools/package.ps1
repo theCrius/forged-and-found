@@ -1,5 +1,5 @@
 # Builds the native DLL and variants-reverter (Release) and packages a release zip:
-#   dist/forged-and-found-<version>.zip
+#   dist/forged-and-found-<version>.zip (plus the same file as dist/forged-and-found.zip)
 #     forged-and-found/    the ShroudForge mod folder (copy into <game>/mods/)
 #     variants-reverter/   the save converter for removing the mod, with its variant map
 #     README.md, LICENSE
@@ -40,3 +40,9 @@ $zip = Join-Path $dist "forged-and-found-$version.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 '{0}  {1:N0} bytes  SHA-256 {2}' -f $zip, (Get-Item $zip).Length, (Get-FileHash $zip).Hash
+
+# Same zip under a name without the version, so .../releases/latest/download/forged-and-found.zip
+# always points at the newest release.
+$latest = Join-Path $dist 'forged-and-found.zip'
+Copy-Item $zip $latest -Force
+'{0}  (copy for the latest-release link)' -f $latest
