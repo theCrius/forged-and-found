@@ -1,4 +1,4 @@
--- Forged & Found prototype 0.12.1 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
+-- Forged & Found prototype 0.13.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -17,7 +17,7 @@
 --   - GameKnowledgeResource world/player knowledge maps (an item's ItemId is
 --     also its KnowledgeId)
 --   - Name "§ <original name>" in every language, rendered at runtime by the
---     native DLL (see "Variant marker"). Beta only: needs the flag file marker.enabled.
+--     native DLL (see "Variant marker"). Optional: the variantMarker setting.
 --
 -- Loot (developer's design, 2026-11-01): this script changes no loot data. All
 -- loot tables, fixed chests and world items stay vanilla; variant loot entries
@@ -118,8 +118,11 @@ local function feature(key) return shroudforge.settings.get(key, false) == true 
 local VARIANT_DROPS = feature("variantDrops")
 local CRAFTED_EQUIPMENT = feature("craftedEquipmentRarity")
 local CRAFTED_LORE = feature("craftedLoreItems")
-log(string.format("features: variant drops %s, crafted equipment rarity %s, crafted lore items %s",
-    VARIANT_DROPS and "on" or "off", CRAFTED_EQUIPMENT and "on" or "off", CRAFTED_LORE and "on" or "off"))
+-- Display only: "§ " in front of variant names in this player's game (no effect on a server).
+local VARIANT_MARKER = feature("variantMarker")
+log(string.format("features: variant drops %s, crafted equipment rarity %s, crafted lore items %s, variant marker %s",
+    VARIANT_DROPS and "on" or "off", CRAFTED_EQUIPMENT and "on" or "off", CRAFTED_LORE and "on" or "off",
+    VARIANT_MARKER and "on" or "off"))
 
 ---------------------------------------------------------------------------
 -- Deterministic helpers
@@ -1111,7 +1114,7 @@ do
 end
 
 ---------------------------------------------------------------------------
--- Variant marker (beta, flag file marker.enabled): variants show as
+-- Variant marker (setting variantMarker, off by default; client only): variants show as
 -- "§ <original name>" in every language, rendered at runtime by the native DLL.
 --
 -- A name is a LocaTagReference: a GUID whose game.guid.hash is a LocaTagId,
@@ -1152,14 +1155,12 @@ local function find_sorted(ids, id)
     return nil
 end
 
-local MARKER_FLAG = "marker.enabled"
-local MARKER_ENABLED = io.exists(MARKER_FLAG)
 local marker_of = {} -- original GUID -> { id = marker LocaTagId, name_id = original name's LocaTagId }
 
 if IS_SERVER then
     log("marker skipped (dedicated server: names are rendered by each client)")
-elseif not MARKER_ENABLED then
-    log("marker disabled (no " .. MARKER_FLAG .. " in the mod folder)")
+elseif not VARIANT_MARKER then
+    log("marker off (setting \"Mark variants with \194\167\")")
 else
     local ok, err = pcall(function()
         -- Read-only check against the English table: a marker id must not be a real

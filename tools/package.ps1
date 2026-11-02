@@ -22,7 +22,7 @@ $stage = Join-Path $dist "forged-and-found-$version"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-# Mod folder: package files only (no local flag files such as marker.enabled).
+# Mod folder: package files only.
 $modOut = Join-Path $stage 'forged-and-found'
 New-Item -ItemType Directory -Force -Path $modOut | Out-Null
 foreach ($item in 'mod.json', 'extended.mod.json', 'native-plugin.ini', 'src', 'data', 'bin') {

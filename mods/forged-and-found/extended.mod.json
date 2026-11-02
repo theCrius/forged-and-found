@@ -26,6 +26,15 @@
       "restartRequired": true,
       "assetPreparation": true
     },
+    "variantMarker": {
+      "value": false,
+      "label": "Mark variants with §",
+      "description": "Shows \"§\" in front of the name of every variant item (for example \"§ Scorching Wand\"), so you can tell variants from vanilla items at a glance. Only changes what you see in your own game; it has no effect on a dedicated server or on other players.",
+      "control": "toggle",
+      "applyAt": "restart",
+      "restartRequired": true,
+      "assetPreparation": true
+    },
     "craftedLoreItems": {
       "value": false,
       "label": "Crafted lore items",
@@ -40,6 +49,10 @@
     {
       "label": "Features",
       "settings": ["variantDrops", "craftedEquipmentRarity", "craftedLoreItems"]
+    },
+    {
+      "label": "Display",
+      "settings": ["variantMarker"]
     }
   ]
 }

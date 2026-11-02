@@ -35,6 +35,11 @@ raised to the item level of the crafted armor of their tier, also in the craftin
 Items crafted before you switch a crafting feature on or off keep the rarity they were
 crafted with.
 
+### Mark variants with § (display option)
+Shows "§" in front of the name of every variant item (for example "§ Scorching Wand"), so
+you can tell variants from vanilla items at a glance. It only changes what you see in your
+own game; each player decides for themselves, and it has no effect on a server.
+
 ## Requirements
 
 - Enshrouded on Windows, game build 1273043 (the native part only activates on the game
