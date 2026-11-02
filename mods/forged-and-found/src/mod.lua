@@ -1,4 +1,4 @@
--- Forged & Found prototype 0.13.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
+-- Forged & Found prototype 0.13.1 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with

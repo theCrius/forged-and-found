@@ -4,6 +4,9 @@
 // (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
 // enemy loot, world pickups, gathering), not for moving items and not for crafting.
 //
+// 0.8.0 (game 1283531): addresses for the game update of 2026-11-02 (client and server);
+// the old build stays supported. "not swapped" lines are capped per caller.
+//
 // 0.7.0 (rename): the mod is now Forged & Found (id forged-and-found); DLL, log and
 // export paths follow the new id. Variant ids are unchanged (the data mod's seeds keep
 // the old name).
@@ -53,7 +56,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.7.0";
+constexpr const char* kVersion = "0.8.0";
 
 constexpr uint8_t kEpic = 3, kLegendary = 4;
 
@@ -76,11 +79,18 @@ struct Build {
     uintptr_t create_item, swap_caller, crafting_ui, find_entry, text_lookup;
 };
 constexpr Build kBuilds[] = {
-    // enshrouded.exe SHA-256 d64966e2... (ShroudForge profile 26082781)
-    {"client", 0x6AD77F0C, 0x2A1E000, 0x40B4F0, 0x3C0C7B, 0x3F2258, 0x11FA020, 0x11FA0D0},
-    // enshrouded_server.exe SHA-256 d7baa768... (ShroudForge profile 26083076); matched
-    // statically (create_item, picker call), not yet verified live
-    {"dedicated server", 0x6AD77F14, 0x1DD1000, 0x1AC790, 0x165F1B, 0, 0, 0},
+    // Game version 1273043. enshrouded.exe SHA-256 d64966e2... (ShroudForge profile 26082781)
+    {"client (game 1273043)", 0x6AD77F0C, 0x2A1E000, 0x40B4F0, 0x3C0C7B, 0x3F2258, 0x11FA020, 0x11FA0D0},
+    // enshrouded_server.exe SHA-256 d7baa768... (ShroudForge profile 26083076)
+    {"dedicated server (game 1273043)", 0x6AD77F14, 0x1DD1000, 0x1AC790, 0x165F1B, 0, 0, 0},
+    // Game version 1283531 (Steam builds 26320373 / 26319703, 2026-11-02), found by entry
+    // bytes and call structure (research/game-update-1283531.md): item creator = the only
+    // match of the creator's 15 entry bytes with 26 callers; picker = the function calling it
+    // at +0x178 (fixed items) and +0x556 (random), called by the collector with the
+    // 1024-entry list; text lookups = the only match of their entry bytes, 3 and 5 callers.
+    // The crafting-UI caller is not identified yet (0): only an optimisation.
+    {"client (game 1283531)", 0x6AE4601E, 0x2A40000, 0x412380, 0x3C776B, 0, 0x1216EA0, 0x1216F50},
+    {"dedicated server (game 1283531)", 0x6AE46022, 0x1DDE000, 0x1B1F60, 0x16B38B, 0, 0, 0},
 };
 const Build* g_build = nullptr;
 
@@ -234,15 +244,21 @@ uint64_t splitmix64(uint64_t x) {
 
 // Decides which ItemId to forward for an item that has variants. Returns the
 // (possibly unchanged) 64-bit slot; only its low 32 bits are the ItemId.
-uint64_t roll_item(uint64_t item_id, uint64_t rarity_ptr, uintptr_t caller, const std::vector<uint32_t>& variants) {
+uint64_t roll_item(uint64_t item_id, uint64_t rarity_ptr, uintptr_t caller, uint64_t calls,
+                   const std::vector<uint32_t>& variants) {
     uint32_t item = static_cast<uint32_t>(item_id);
     uint8_t ra = 0;
     bool has_ra = read_u8(reinterpret_cast<const uint8_t*>(rarity_ptr), &ra);
     char text[256];
     if (caller != g_build->swap_caller) {
-        snprintf(text, sizeof text, "not swapped (caller +0x%llX is not random container loot): item=%u rarity byte=%s%u",
-                 static_cast<unsigned long long>(caller), item, has_ra ? "" : "?", ra);
-        log_line(text);
+        // Logged like other per-caller lines (first kFullLines only): a caller that is not
+        // known, e.g. the crafting UI on a build where it is not identified, may call
+        // thousands of times per second.
+        if (calls <= kFullLines) {
+            snprintf(text, sizeof text, "not swapped (caller +0x%llX is not random container loot): item=%u rarity byte=%s%u",
+                     static_cast<unsigned long long>(caller), item, has_ra ? "" : "?", ra);
+            log_line(text);
+        }
         return item_id;
     }
     if (!has_ra || (ra != kEpic && ra != kLegendary)) {
@@ -268,7 +284,7 @@ uint64_t create_item_hook(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, ui
     uint64_t forward_id = item_id;
     if (caller != g_build->crafting_ui && g_variants) {
         auto it = g_variants->find(static_cast<uint32_t>(item_id));
-        if (it != g_variants->end()) forward_id = roll_item(item_id, rarity_ptr, caller, it->second);
+        if (it != g_variants->end()) forward_id = roll_item(item_id, rarity_ptr, caller, calls, it->second);
     }
     if (calls > kFullLines) {
         if (is_power_of_ten(calls)) {
