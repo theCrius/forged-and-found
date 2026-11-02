@@ -63,10 +63,12 @@ program, cannot run mods at all.
 **On a server, the server's switches decide** what drops and what is crafted. Change them
 in either of these ways, then restart the server:
 
-- On a Windows server you can log into, open ShroudForge for the server folder and use the
-  mod's settings there:
+- On a Windows server you can log into, start `shroudforge\shroudforge.exe` in the server
+  folder without arguments (or double-click it). It opens the ShroudForge window for that
+  installation; select "Forged & Found" and use its switches. The same from PowerShell,
+  in the server folder:
   ```
-  .\shroudforge\shroudforge.exe --root "<server folder>" --desktop --target server
+  .\shroudforge\shroudforge.exe
   ```
 - On any server whose files you can edit (also Docker/Proton hosts), open
   `mods/forged-and-found/extended.mod.json` and set `"value"` to `true` (on) or `false`
