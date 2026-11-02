@@ -1,4 +1,4 @@
--- Forged & Found prototype 0.13.1 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
+-- Forged & Found prototype 0.14.0 (test worlds only; ShroudForge only; variants via native post-draw swap; beta marker rendered by the DLL; client and dedicated server; three features switchable in ShroudForge, all off by default).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -120,9 +120,12 @@ local CRAFTED_EQUIPMENT = feature("craftedEquipmentRarity")
 local CRAFTED_LORE = feature("craftedLoreItems")
 -- Display only: "§ " in front of variant names in this player's game (no effect on a server).
 local VARIANT_MARKER = feature("variantMarker")
-log(string.format("features: variant drops %s, crafted equipment rarity %s, crafted lore items %s, variant marker %s",
+-- Native part only: on a game build it has no addresses for, the DLL may use the targets it
+-- finds by rule (allowUntestedGameVersions); off, it only logs them.
+local AUTO_DETECT = feature("allowUntestedGameVersions")
+log(string.format("features: variant drops %s, crafted equipment rarity %s, crafted lore items %s, variant marker %s, untested game versions %s",
     VARIANT_DROPS and "on" or "off", CRAFTED_EQUIPMENT and "on" or "off", CRAFTED_LORE and "on" or "off",
-    VARIANT_MARKER and "on" or "off"))
+    VARIANT_MARKER and "on" or "off", AUTO_DETECT and "allowed" or "not allowed"))
 
 ---------------------------------------------------------------------------
 -- Deterministic helpers
@@ -1474,7 +1477,8 @@ if loader.features.export then
     end
     -- First element: the switches the DLL needs. A manifest without this line (older
     -- versions) means variant drops off.
-    table.insert(lines, 1, string.format('{"settings":{"variantDrops":%s}}', tostring(VARIANT_DROPS)))
+    table.insert(lines, 1, string.format('{"settings":{"variantDrops":%s,"autoDetect":%s}}', tostring(VARIANT_DROPS),
+        tostring(AUTO_DETECT)))
     io.export("forged-and-found/manifest.json", "[\n" .. table.concat(lines, ",\n") .. "\n]")
 
     -- Pinned list for the next release: every variant built now, plus pinned

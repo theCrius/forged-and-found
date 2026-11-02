@@ -1,7 +1,7 @@
 {
   "id": "forged-and-found",
   "name": "Forged & Found (prototype)",
-  "version": "0.13.1",
+  "version": "0.14.0",
   "description": "PROTOTYPE, test worlds only. Three features, each switched on in the mod's settings (all off by default): variant drops (Epic and Legendary random loot from chests, enemy remains and bosses can drop as variants with rerolled enhancements; fixed chests, world items and direct enemy drops stay vanilla), crafted equipment rarity by item level, and Legendary crafted lore items. Vanilla items are never changed. Every player on a server needs the mod. To remove it: switch it off, then run variants-reverter on your saves before starting the game, or variant items are deleted.",
   "authors": ["Crius"],
   "dependencies": [],

@@ -4,6 +4,11 @@
 // (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
 // enemy loot, world pickups, gathering), not for moving items and not for crafting.
 //
+// 0.9.0 (auto-detect, branch auto-detect): on a game build not in kBuilds, finds the
+// targets by rule (autodetect.h) and logs them; it uses them only when every loot rule
+// passed and the player switched on "Allow on untested game versions" (manifest
+// "autoDetect"). Known builds still use their tested addresses.
+//
 // 0.8.0 (game 1283531): addresses for the game update of 2026-11-02 (client and server);
 // the old build stays supported. "not swapped" lines are capped per caller.
 //
@@ -50,13 +55,15 @@
 #include <cstdlib>
 #include <cstring>
 #include <cwchar>
+
+#include "autodetect.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 namespace {
 
-constexpr const char* kVersion = "0.8.0";
+constexpr const char* kVersion = "0.9.0";
 
 constexpr uint8_t kEpic = 3, kLegendary = 4;
 
@@ -150,6 +157,10 @@ TextLookupFn g_find_entry = nullptr;  // the trampoline when hooked, else the ga
 // Original ItemId -> its variants' ItemIds. Filled once in DllMain, read-only afterwards.
 std::unordered_map<uint32_t, std::vector<uint32_t>>* g_variants = nullptr;
 bool g_drops = false;  // the "Variant drops" setting, from the manifest's first line
+// The "Allow on untested game versions" setting (manifest "autoDetect"): on an unknown build,
+// use the auto-detected targets; off, only log them.
+bool g_auto_detect = false;
+Build g_auto_build{};  // filled by auto-detection on an unknown build
 std::atomic<uint64_t> g_roll_counter{0};
 
 // Marker name LocaTagId -> the original name's LocaTagId (from the manifest; present only
@@ -337,6 +348,7 @@ bool load_variant_table(char* text, size_t text_size) {
     }
 
     g_drops = strstr(data.data(), "\"variantDrops\":true") != nullptr;
+    g_auto_detect = strstr(data.data(), "\"autoDetect\":true") != nullptr;
     auto* table = new std::unordered_map<uint32_t, std::vector<uint32_t>>();
     auto* markers = new std::unordered_map<uint32_t, uint32_t>();
     size_t variants = 0, bad = 0;
@@ -546,18 +558,46 @@ void start() {
              kVersion, name, GetCurrentProcessId(), static_cast<unsigned long>(stamp), static_cast<unsigned long>(size));
     log_line(text);
 
+#ifdef FF_TEST_UNKNOWN_BUILD
+    // Test build (native/build.ps1 -TestUnknownBuild): treat every build as unknown, so the
+    // auto-detection path can be tested on a game version with known addresses.
+    log_line("TEST BUILD: known game builds are ignored, auto-detection decides");
+#else
     for (const Build& b : kBuilds) {
         if (stamp == b.stamp && size == b.size) g_build = &b;
     }
+#endif
+    // The variant table carries the switches, including the one that decides below whether
+    // an auto-detected (untested) build may be used. Without a valid table the loot hook
+    // still installs, but only logs (g_variants stays null).
+    char table_text[512];
+    bool swapping = load_variant_table(table_text, sizeof table_text);
     if (!g_build) {
-        log_line("inactive: not a game build this DLL was written for (no hook installed)");
-        return;
+        // Unknown build (usually a game update): look for the targets by rule
+        // (autodetect.h). The result is always logged; it is used only when every loot rule
+        // passed and the player allowed untested game versions.
+        log_line("unknown game build: running auto-detection");
+        autodetect::Image image;
+        autodetect::Found found;
+        std::vector<std::string> notes;
+        bool ok = autodetect::open(reinterpret_cast<const uint8_t*>(g_image_base), image) &&
+                  autodetect::detect(image, found, notes);
+        for (const std::string& n : notes) log_line(n.c_str());
+        if (!ok) {
+            log_line("inactive: unknown game build, and auto-detection did not find the loot functions (no hook installed)");
+            return;
+        }
+        if (!g_auto_detect) {
+            log_line("inactive: auto-detection found the loot functions, but \"Allow on untested game versions\" is off (no hook installed)");
+            return;
+        }
+        g_auto_build = {"auto-detected (untested game build)", stamp, size, found.create_item, found.swap_caller, 0,
+                        found.text ? found.find_entry : 0, found.text ? found.text_lookup : 0};
+        g_build = &g_auto_build;
     }
     snprintf(text, sizeof text, "build: %s", g_build->name);
     log_line(text);
-    // Without a valid table the loot hook still installs, but only logs (g_variants stays null).
-    bool swapping = load_variant_table(text, sizeof text);
-    log_line(text);
+    log_line(table_text);
     if (swapping && !g_drops) {
         log_line("loot hook not installed: variant drops are off in the mod's settings");
     } else if (!install_hook(g_build->create_item, kCreateItemPrologue, reinterpret_cast<void*>(&create_item_hook),
@@ -583,7 +623,7 @@ void start() {
                                       reinterpret_cast<void*>(&text_lookup_hook), &g_text_lookup_original);
         log_line(text_path ? "marker text hook installed" : "marker text hook NOT installed: text-lookup prologue differs");
     } else if (g_markers) {
-        log_line("marker: this process shows no text (dedicated server), text lookup untouched");
+        log_line("marker: no text lookups for this build (dedicated server, or auto-detection found none), text lookup untouched");
     } else {
         log_line("marker off (no marker names in the variant table): text lookup untouched");
     }
