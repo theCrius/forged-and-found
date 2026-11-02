@@ -53,6 +53,38 @@ crafted with.
 
 Updating replaces the mod folder, which resets the switches to off.
 
+## Dedicated server
+
+The server needs ShroudForge installed beside `enshrouded_server.exe` (see ShroudForge's
+server guide) and the `forged-and-found` folder in its `mods` folder. Hosts that only let
+you edit the save files and the server config, and always start the official server
+program, cannot run mods at all.
+
+**On a server, the server's switches decide** what drops and what is crafted. Change them
+in either of these ways, then restart the server:
+
+- On a Windows server you can log into, open ShroudForge for the server folder and use the
+  mod's settings there:
+  ```
+  .\shroudforge\shroudforge.exe --root "<server folder>" --desktop --target server
+  ```
+- On any server whose files you can edit (also Docker/Proton hosts), open
+  `mods/forged-and-found/extended.mod.json` and set `"value"` to `true` (on) or `false`
+  (off) for each feature: `variantDrops`, `craftedEquipmentRarity`, `craftedLoreItems`.
+  Example:
+  ```json
+  "variantDrops": {
+    "value": true,
+  ```
+
+Every player needs the mod too, and should **switch on the same crafting features as the
+server**: the crafting screen shows rarities and costs from the player's own game data, so
+different switches would show other costs or rarities than the server applies. The
+"Variant drops" switch only matters on the server, which rolls the loot.
+
+Updating the mod on the server replaces `extended.mod.json` and resets the switches to
+off, so set them again after each update.
+
 ## Removing the mod
 
 Switching the mod off in ShroudForge (or deleting it) makes the game **delete every variant
