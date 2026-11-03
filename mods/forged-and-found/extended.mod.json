@@ -11,7 +11,7 @@
     "variantDrops": {
       "value": false,
       "label": "Variant drops",
-      "description": "Epic and Legendary items from random chests, enemy remains and bosses can drop as variants with different enhancements. Turning this off only stops new variants from dropping: variants you already own stay variants and keep working while the mod is installed. Before removing the mod, convert them with variants-reverter, or the game deletes them. On a dedicated server, the server's setting decides.",
+      "description": "Epic and Legendary items from random chests, enemy remains and bosses can drop as variants with different enhancements. Turning it off only stops new drops; variants you own keep working. On a server, the server's switch decides.",
       "control": "toggle",
       "applyAt": "restart",
       "restartRequired": true,
@@ -20,7 +20,7 @@
     "craftedEquipmentRarity": {
       "value": false,
       "label": "Crafted equipment rarity by level",
-      "description": "Armor, shields and weapons crafted at artisans get their rarity from their item level (up to 5 Common, up to 10 Uncommon, up to 15 Rare, above that Epic). Their crafting cost changes by 25% per rarity step. Items crafted before keep the rarity they were crafted with.",
+      "description": "Crafted armor, shields and weapons get their rarity from their item level (up to 5 Common, 10 Uncommon, 15 Rare, above that Epic), and their cost changes by 25% per rarity step. Items crafted earlier keep their rarity.",
       "control": "toggle",
       "applyAt": "restart",
       "restartRequired": true,
@@ -29,7 +29,7 @@
     "variantMarker": {
       "value": false,
       "label": "Mark variants with §",
-      "description": "Shows \"§\" in front of the name of every variant item (for example \"§ Scorching Wand\"), so you can tell variants from vanilla items at a glance. Only changes what you see in your own game; it has no effect on a dedicated server or on other players.",
+      "description": "Shows \"§\" before variant names, e.g. \"§ Scorching Wand\". Only changes what you see in your own game.",
       "control": "toggle",
       "applyAt": "restart",
       "restartRequired": true,
@@ -38,7 +38,7 @@
     "allowUntestedGameVersions": {
       "value": false,
       "label": "Allow on untested game versions",
-      "description": "After a game update, variant drops and the § marker normally stop until the mod is updated. With this on, the mod looks for the game functions it needs by itself and uses them if every check passes. The checks confirm the functions look and connect as before, but cannot prove the game still uses them the same way, so variant drops on an untested version are at your own risk. With this off, the search still runs and its result is written to the mod's log.",
+      "description": "At your own risk. After a game update, the mod finds the game functions it needs by itself instead of waiting for a mod update. It uses them only if every check passes, but it can't prove the game still behaves the same. When off, variant drops and the § stop on untested versions until the mod is updated.",
       "control": "toggle",
       "applyAt": "restart",
       "restartRequired": true,
@@ -47,7 +47,7 @@
     "craftedLoreItems": {
       "value": false,
       "label": "Crafted lore items",
-      "description": "Copies of lore items crafted at artisans become Legendary (crafting cost +50%) and are raised to the item level of the crafted armor of their tier, also in the crafting preview. Items crafted before keep the rarity they were crafted with.",
+      "description": "Crafted copies of lore items become Legendary (cost +50%) at the item level of their tier's crafted armor. Items crafted earlier keep their rarity.",
       "control": "toggle",
       "applyAt": "restart",
       "restartRequired": true,

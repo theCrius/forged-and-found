@@ -1,10 +1,10 @@
 # Forged & Found
 
 An Enshrouded mod for [ShroudForge](https://github.com/bonsaibauer/shroudforge) that makes
-looted and crafted equipment more interesting. It has three features. Each one is a
-separate switch in the mod's ShroudForge settings, and all three start **off**.
+looted and crafted equipment more interesting. It has three features plus two options.
+Each one is a separate switch in the mod's ShroudForge settings, and all start **off**.
 
-> **Prototype.** Use it in test worlds and back up your saves before trying it.
+> **Beta.** Back up your saves before installing or updating it.
 
 ## Features
 
@@ -40,10 +40,21 @@ Shows "§" in front of the name of every variant item (for example "§ Scorching
 you can tell variants from vanilla items at a glance. It only changes what you see in your
 own game; each player decides for themselves, and it has no effect on a server.
 
+### Allow on untested game versions (advanced, at your own risk)
+Variant drops and the § marker rely on a small native part that hooks a few game
+functions. After a game update their addresses change, so by default those two features
+stop until the mod is updated (everything else keeps working, and variants you own stay
+safe). With this switch on, the mod looks for the functions in the new game version by
+itself and uses them if every check passes. The checks confirm the functions look and
+connect as before, but cannot prove the game still uses them the same way. With the switch
+off, the search still runs and writes its result to the mod's log
+(`<game>/shroudforge/logs/forged-and-found-native.log`).
+
 ## Requirements
 
-- Enshrouded on Windows, game build 1273043 (the native part only activates on the game
-  builds it was written for; on any other build it stays inactive and logs why).
+- Enshrouded on Windows. Tested game versions: 1273043 and 1283531 (the update of
+  2026-11-02). On other versions the native part stays inactive unless "Allow on untested
+  game versions" is on (see above), and logs why.
 - ShroudForge 1.7.7 or newer.
 - Multiplayer: the mod also runs on a dedicated server that has ShroudForge. **Every player
   on that server needs the mod too**: a player without it cannot see variant items and loses
