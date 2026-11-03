@@ -5,6 +5,10 @@ looted and crafted equipment more interesting. It has three features plus two op
 Each one is a separate switch in the mod's ShroudForge settings, and all start **off**.
 
 > **Beta.** Back up your saves before installing or updating it.
+>
+> **Fully tested on game version 1283531** (the Steam update of 2026-11-02), client and
+> dedicated server. Your version is in `enshrouded.log` in the game folder, line
+> `Game Version (SVN): …`.
 
 ## Features
 
@@ -52,8 +56,8 @@ off, the search still runs and writes its result to the mod's log
 
 ## Requirements
 
-- Enshrouded on Windows. Tested game versions: 1273043 and 1283531 (the update of
-  2026-11-02). On other versions the native part stays inactive unless "Allow on untested
+- Enshrouded on Windows. Fully tested on game version 1283531 (the update of 2026-11-02,
+  the latest when 0.14.0 was released); also tested on 1273043. On other versions the native part stays inactive unless "Allow on untested
   game versions" is on (see above), and logs why.
 - ShroudForge 1.7.7 or newer.
 - Multiplayer: the mod also runs on a dedicated server that has ShroudForge. **Every player
