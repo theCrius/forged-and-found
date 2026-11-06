@@ -57,7 +57,7 @@ off, the search still runs and writes its result to the mod's log
 ## Requirements
 
 - Enshrouded on Windows. Fully tested on game version 1287369 (the update of 2026-11-04,
-  the latest when 0.15.0 was released); also tested on 1283531 and 1273043. On other versions the native part stays inactive unless "Allow on untested
+  the latest when 0.15.1 was released); also tested on 1283531 and 1273043. On other versions the native part stays inactive unless "Allow on untested
   game versions" is on (see above), and logs why.
 - ShroudForge 1.7.9 or newer.
 - Multiplayer: the mod also runs on a dedicated server that has ShroudForge. **Every player
@@ -74,6 +74,10 @@ off, the search still runs and writes its result to the mod's log
    Changing a switch needs a restart.
 
 Updating replaces the mod folder, which resets the switches to off.
+
+The download holds only the mod. The save converter `variants-reverter` is a separate download,
+and you need it only to remove the mod or to take a character to a server without it (see
+[Removing the mod](#removing-the-mod)).
 
 ### If a warning appears at startup
 
@@ -124,8 +128,10 @@ A service or host that restarts the server tries again each time.
 
 Switching the mod off in ShroudForge (or deleting it) makes the game **delete every variant
 item** the next time a character or world is loaded, because the game no longer knows them.
-To keep them, convert them back into their vanilla items first with `variants-reverter.exe`
-(in the release zip):
+To keep them, convert them back into their vanilla items first with `variants-reverter.exe`.
+It is a separate download, because Nexus Mods does not accept mods with an `.exe` inside:
+[variants-reverter.zip](https://github.com/theCrius/forged-and-found/releases/latest/download/variants-reverter.zip)
+(always the latest release). Keep `variant-map.txt` next to the program.
 
 1. Switch the mod off or delete it. Do not start the game yet.
 2. Back up your save folder. Characters and local worlds are in
@@ -147,14 +153,15 @@ does, and refuses to write anything it cannot convert safely.
 Needs Windows, PowerShell 7 and the Visual Studio 2022 Build Tools (C++ workload).
 
 ```powershell
-./tools/package.ps1     # builds everything and writes dist/forged-and-found-<version>.zip
+./tools/package.ps1     # builds everything and writes dist/forged-and-found-<version>.zip and dist/variants-reverter-<version>.zip
 ```
 
 Or separately: `native/build.ps1` (the mod's DLL, copied into `mods/forged-and-found/bin/`)
 and `native/build-reverter.ps1` (`native/build/reverter-Release/variants-reverter.exe`).
 
-Pushing a tag `v<version>` matching `mods/forged-and-found/mod.json` builds the zip on
-GitHub Actions and publishes it as a release.
+Pushing a tag `v<version>` matching `mods/forged-and-found/mod.json` builds both zips on
+GitHub Actions and publishes them as a release. The mod zip must hold no `.exe`, and packaging
+fails if it does.
 
 | Path | Contents |
 |---|---|

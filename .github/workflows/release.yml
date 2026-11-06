@@ -1,8 +1,8 @@
-# Builds the mod and variants-reverter on Windows (MSVC) and packages the release zip.
+# Builds the mod and variants-reverter on Windows (MSVC) and packages the two release zips.
 # Push a tag v<version> (matching mods/forged-and-found/mod.json) to publish a GitHub
-# release; run it manually (Actions tab) to get the zip as a build artifact only.
+# release; run it manually (Actions tab) to get the zips as a build artifact only.
 # Releases are published as normal (not pre-) releases, so GitHub's fixed links
-# .../releases/latest and .../releases/latest/download/forged-and-found.zip follow them.
+# .../releases/latest and .../releases/latest/download/<name>.zip follow them.
 name: Release
 
 on:
