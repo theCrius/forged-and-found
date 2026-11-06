@@ -6,7 +6,7 @@ Each one is a separate switch in the mod's ShroudForge settings, and all start *
 
 > **Beta.** Back up your saves before installing or updating it.
 >
-> **Fully tested on game version 1283531** (the Steam update of 2026-11-02), client and
+> **Fully tested on game version 1287369** (the Steam update of 2026-11-04), client and
 > dedicated server. Your version is in `enshrouded.log` in the game folder, line
 > `Game Version (SVN): …`.
 
@@ -56,10 +56,10 @@ off, the search still runs and writes its result to the mod's log
 
 ## Requirements
 
-- Enshrouded on Windows. Fully tested on game version 1283531 (the update of 2026-11-02,
-  the latest when 0.14.0 was released); also tested on 1273043. On other versions the native part stays inactive unless "Allow on untested
+- Enshrouded on Windows. Fully tested on game version 1287369 (the update of 2026-11-04,
+  the latest when 0.15.0 was released); also tested on 1283531 and 1273043. On other versions the native part stays inactive unless "Allow on untested
   game versions" is on (see above), and logs why.
-- ShroudForge 1.7.7 or newer.
+- ShroudForge 1.7.9 or newer.
 - Multiplayer: the mod also runs on a dedicated server that has ShroudForge. **Every player
   on that server needs the mod too**: a player without it cannot see variant items and loses
   them. On a server, the server's settings decide what drops and what is crafted.
@@ -74,6 +74,13 @@ off, the search still runs and writes its result to the mod's log
    Changing a switch needs a restart.
 
 Updating replaces the mod folder, which resets the switches to off.
+
+### If a warning appears at startup
+
+Sometimes ShroudForge cannot apply its mods, and the game then starts without any of them.
+Loading a character or world in that state would **delete your variant items**, so the mod
+stops you: a window says what happened and offers to close the game. Choose **Yes** and start
+the game again, which usually fixes it. Do not load anything until the window stops appearing.
 
 ## Dedicated server
 
@@ -108,6 +115,10 @@ different switches would show other costs or rarities than the server applies. T
 
 Updating the mod on the server replaces `extended.mod.json` and resets the switches to
 off, so set them again after each update.
+
+If ShroudForge cannot apply its mods on a server, the server exits before it loads the world,
+so variant items stay safe, and the reason is in `shroudforge/logs/forged-and-found-native.log`.
+A service or host that restarts the server tries again each time.
 
 ## Removing the mod
 

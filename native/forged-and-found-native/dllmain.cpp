@@ -4,6 +4,10 @@
 // (research/loot-item-creation.md). It runs for new loot only (chests, enemy remains,
 // enemy loot, world pickups, gathering), not for moving items and not for crafting.
 //
+// 0.10.0 (game 1287369): addresses for the game update of 2026-11-04 (client and server). When
+// ShroudForge's asset pass failed, installs nothing and warns the player, or exits on a
+// dedicated server, before anything loads on data without the variants (asset_pass_guard.h).
+//
 // 0.9.0 (auto-detect, branch auto-detect): on a game build not in kBuilds, finds the
 // targets by rule (autodetect.h) and logs them; it uses them only when every loot rule
 // passed and the player switched on "Allow on untested game versions" (manifest
@@ -56,6 +60,7 @@
 #include <cstring>
 #include <cwchar>
 
+#include "asset_pass_guard.h"
 #include "autodetect.h"
 #include <string>
 #include <unordered_map>
@@ -63,7 +68,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.9.0";
+constexpr const char* kVersion = "0.10.0";
 
 constexpr uint8_t kEpic = 3, kLegendary = 4;
 
@@ -98,6 +103,10 @@ constexpr Build kBuilds[] = {
     // The crafting-UI caller is not identified yet (0): only an optimisation.
     {"client (game 1283531)", 0x6AE4601E, 0x2A40000, 0x412380, 0x3C776B, 0, 0x1216EA0, 0x1216F50},
     {"dedicated server (game 1283531)", 0x6AE46022, 0x1DDE000, 0x1B1F60, 0x16B38B, 0, 0, 0},
+    // Game version 1287369 (Steam builds 26430625 / 26430253, 2026-11-04): found by the auto-detection,
+    // then checked against the stored executables. A Legendary rolled a variant on the server live.
+    {"client (game 1287369)", 0x6AEB144C, 0x2A3F000, 0x412460, 0x3C784B, 0, 0x12161D0, 0x1216280},
+    {"dedicated server (game 1287369)", 0x6AEB143E, 0x1DDE000, 0x1B1F60, 0x16B38B, 0, 0, 0},
 };
 const Build* g_build = nullptr;
 
@@ -557,6 +566,15 @@ void start() {
     snprintf(text, sizeof text, "forged-and-found-native %s loaded: host %s (pid %lu), PE TimeDateStamp 0x%08lX, SizeOfImage 0x%lX",
              kVersion, name, GetCurrentProcessId(), static_cast<unsigned long>(stamp), static_cast<unsigned long>(size));
     log_line(text);
+
+    // Without the mod's data the loot hook would hand out variants that do not exist.
+    if (asset_pass_guard::stop_if_failed(
+            L"ShroudForge could not apply your mods this time, so the game is running without them.\n\n"
+            L"Do not load a character or world now: Forged & Found's items would be deleted from your save.\n\n"
+            L"Close the game now? Starting it again usually fixes this.",
+            log_line)) {
+        return;
+    }
 
 #ifdef FF_TEST_UNKNOWN_BUILD
     // Test build (native/build.ps1 -TestUnknownBuild): treat every build as unknown, so the

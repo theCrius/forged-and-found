@@ -1,7 +1,7 @@
 {
   "id": "forged-and-found",
   "name": "Forged & Found (beta)",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "BETA. Epic and Legendary loot from random chests, enemy remains and bosses can roll as variants with different enhancements. Crafted equipment gets its rarity from its item level, and crafted lore items become Legendary. Each feature is a switch, all off by default. Every player on a server needs the mod. Before removing it, run variants-reverter on your saves, or variant items are lost.",
   "authors": ["Crius"],
   "dependencies": [],
