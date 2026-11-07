@@ -1,4 +1,4 @@
--- Forged & Found 0.15.1 beta (ShroudForge only; variants via native post-draw swap; optional "§" marker rendered by the DLL; client and dedicated server; three features and two options switchable in ShroudForge, all off by default).
+-- Forged & Found 0.15.2 beta (ShroudForge only; variants via native post-draw swap; optional "§" marker rendered by the DLL; client and dedicated server; three features and two options switchable in ShroudForge, all off by default).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -13,7 +13,8 @@
 --     and original stay independent (equip, storage, reload, upgrades).
 --   - ItemRegistryResource (itemRefs + dbgNames) and LootableItemsResource.items
 --     (parallel arrays, appended at the same index)
---   - ItemKnowledgeResource (StaticHashMap ItemId -> ItemKnowledge)
+--   - not ItemKnowledgeResource since 0.15.2: entries there broke item knowledge for
+--     ~2000 vanilla items (see "Item knowledge" below)
 --   - GameKnowledgeResource world/player knowledge maps (an item's ItemId is
 --     also its KnowledgeId)
 --   - Name "§ <original name>" in every language, rendered at runtime by the
@@ -1348,19 +1349,20 @@ local KNOWLEDGE_KEY = '{"id":{"value":(%d+)}}' -- keys of knowledge maps: Knowle
 -- Item knowledge (ItemId -> ItemKnowledge)
 ---------------------------------------------------------------------------
 
+-- Item knowledge. Variants get NO ItemKnowledge entry (0.15.2, proven 2026-11-07). The game's item knowledge
+-- (Name, Description, Lore, Recipes, Inspected flags per item) stops working for vanilla items
+-- pushed past about position 5000 of this table: inserting 4224 variants moved ~2000 of them
+-- there, which then showed a "new" pip forever and a "special item" popup on every pickup.
+-- Without the entries the pips and popups behave as in vanilla, and variants still work:
+-- inventory, crafting stations, lore crafting and pickups were tested in game. The cause
+-- inside the game is unknown (a capacity of ~5120 entries is inferred, not proven).
 do
     local data = single("keen::ItemKnowledgeResource").data
     local index = verify_static_hash_map(data, ITEM_KEY, "ItemKnowledge")
-    local additions = {}
     for _, v in ipairs(variants) do
         if index[v.id] then error("forged-and-found: variant " .. v.name .. " collides with existing item knowledge id " .. v.id) end
-        local i = index[v.original_id]
-        if i then additions[#additions + 1] = { key = v.id, src = i } end
     end
-    insert_into_static_hash_map(data, additions,
-        function(key, id) key.value = id end,
-        function(value, id) value.itemId.value = id end)
-    log(string.format("item knowledge: added %d entries", #additions))
+    log("item knowledge: variants not added (vanilla table kept as it is)")
 end
 
 ---------------------------------------------------------------------------
@@ -1432,7 +1434,10 @@ do
     for i, g in ipairs(refs) do
         local id = game.guid.hash(g)
         if ids[i] ~= id then error("forged-and-found: registry/loot mismatch at index " .. i) end
-        if not index[id] then error("forged-and-found: registry item without ItemKnowledge at index " .. i) end
+        -- Variants are appended at the end of the registry and have no ItemKnowledge (see above).
+        if not index[id] and i <= #refs - #variants then
+            error("forged-and-found: registry item without ItemKnowledge at index " .. i)
+        end
     end
     local value_ids = {}
     for id in tostring(ik.values):gmatch('{"itemId":{"value":(%d+)}') do value_ids[#value_ids + 1] = tonumber(id) end
@@ -1444,7 +1449,7 @@ do
     local world = verify_static_hash_map(gk.worldKnowledge, KNOWLEDGE_KEY, "worldKnowledge (after)")
     local player = verify_static_hash_map(gk.playerKnowledge, KNOWLEDGE_KEY, "playerKnowledge (after)")
     for _, v in ipairs(variants) do
-        if index[v.original_id] and not index[v.id] then error("forged-and-found: ItemKnowledge missing variant " .. v.name) end
+        if index[v.id] then error("forged-and-found: variant " .. v.name .. " has an ItemKnowledge entry") end
         if world[v.original_id] and not world[v.id] then error("forged-and-found: worldKnowledge missing variant " .. v.name) end
         if player[v.original_id] and not player[v.id] then error("forged-and-found: playerKnowledge missing variant " .. v.name) end
     end
