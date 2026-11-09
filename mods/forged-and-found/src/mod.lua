@@ -1,4 +1,4 @@
--- Forged & Found 0.15.2 beta (ShroudForge only; variants via native post-draw swap; optional "§" marker rendered by the DLL; client and dedicated server; three features and two options switchable in ShroudForge, all off by default).
+-- Forged & Found 0.16.0 beta (ShroudForge only; variants via native post-draw swap; optional "§" marker rendered by the DLL; client and dedicated server; three features and two options switchable in ShroudForge, all off by default).
 --
 -- Vanilla items are never changed. For every item with perks that can drop as
 -- Epic or Legendary, this creates up to MAX_VARIANTS variants (clones with
@@ -489,6 +489,143 @@ local function known_class(info)
 end
 
 ---------------------------------------------------------------------------
+-- Weapon skills (developer's rules, 2026-11-09, since 0.16.0). Skills listed in
+-- WEAPON_SKILLS work only with some weapons; the others work with any (resistances,
+-- elemental damage, attributes, auras, movement, backstab, ...).
+--   - Weapons: a weapon's perks apply only while it is selected in the hotbar, so
+--     a skill on a weapon must work with that weapon in hand.
+--   - Armor follows archetypes: light (Mage armor) for wands and staves; medium
+--     (Ranger armor) for bows, daggers and two-handed weapons (warriors wear it
+--     too); heavy (Warrior armor) for one- and two-handed melee. A skill fits if it
+--     works with any weapon of the archetype; Thrust and Sleight of Hand also fit
+--     medium and heavy (vanilla puts both on heavy armor: warriors may take daggers
+--     or fight unarmed). Unique Greatsword arms: greatsword skills.
+--   - Everything else (rings, shields, wards, multi-class and other unique armor)
+--     keeps any skill.
+-- Sources: the skill texts (research/skills.md), weapon damage types from vanilla
+-- damage perks (axes and swords Cut, maces and hammers Blunt, daggers and bows
+-- Pierce), and the developer: spells are cast from staves; daggers can parry; a
+-- wand's perks stay active while the ward in the other hand parries; any weapon
+-- can backstab; ranged weapons have no Merciless Attacks. Table:
+-- research/weapon-skills.md.
+---------------------------------------------------------------------------
+
+-- Weapon kinds per group, in the order names are searched.
+local WEAPON_KINDS = {
+    Melee_1H = { "Axe", "Mace", "Sword" }, Melee_2H = { "GreatAxe", "GreatSword", "Hammer" },
+    Bow = { "Bow" }, Daggers = { "Daggers" }, Staff = { "Staff" }, Wand = { "Wand" },
+}
+local function kinds(list, ...)
+    local s = {}
+    for _, k in ipairs(list or {}) do s[k] = true end
+    for _, k in ipairs({ ... }) do s[k] = true end
+    return s
+end
+local MELEE = kinds({ "Axe", "Mace", "Sword", "GreatAxe", "GreatSword", "Hammer", "Daggers" })
+local PARRY = kinds({ "Axe", "Mace", "Sword", "GreatAxe", "GreatSword", "Hammer", "Daggers" }, "Wand")
+local WAND, STAFF, MAGIC = kinds(nil, "Wand"), kinds(nil, "Staff"), kinds(nil, "Wand", "Staff")
+local BOW, DAGGERS, BOW_DAGGERS = kinds(nil, "Bow"), kinds(nil, "Daggers"), kinds(nil, "Bow", "Daggers")
+-- Key: the skill part of the perk name (Perk_Skill_Level_<Class>_<Key>_<level>).
+local WEAPON_SKILLS = {
+    WandMastery = WAND, Unity = WAND, EternalSpark = WAND,
+    MageApprenticeship = MAGIC, Wizard = MAGIC, Necromancer = MAGIC, ShroudFilter = MAGIC,
+    Spellslinger = STAFF,
+    -- spells (cast from staves)
+    BloodLetting = STAFF, Terror = STAFF, QuickCharge = STAFF, RighteousFire = STAFF, Healer = STAFF,
+    SleightOfHand = kinds(nil),   -- unarmed damage: never with a weapon in hand
+    Marksman = BOW, Sniper = BOW, Skillshot = BOW, BlessedArrows = BOW, SwiftshotSustenance = BOW,
+    Puncture = BOW,                -- ranged piercing
+    DaggerMastery = DAGGERS, Thrust = DAGGERS, -- melee piercing
+    SurvivalInstinct = BOW_DAGGERS, VitalitySurge = BOW_DAGGERS,
+    WarriorsPath = kinds(nil, "Axe", "Mace", "Sword"),
+    Finesse = kinds(nil, "Axe", "Mace", "Sword", "Daggers"),
+    BarbariansPath = kinds(nil, "GreatAxe", "Hammer"),
+    TitanEdge = kinds(nil, "GreatSword"),
+    Purification = kinds(nil, "Axe", "Mace", "Sword", "GreatAxe", "GreatSword", "Hammer"),
+    Slasher = kinds(nil, "Axe", "Sword", "GreatAxe", "GreatSword"), -- melee cutting
+    Brute = kinds(nil, "Mace", "Hammer"),                            -- melee blunt
+    Veteran = MELEE, BattleHeal = MELEE, BloodRage = MELEE, SoulLeech = MELEE, Steadfast = MELEE,
+    HeavyHanded = MELEE, Opportunity = MELEE,
+    Bash = PARRY, VigorousDeflection = PARRY, ArcaneDeflection = PARRY, PowerParry = PARRY,
+}
+
+local function skill_key(p) return (perk_names[p] or ""):match("^Perk_Skill_Level_%a+_(%a+)") end
+
+-- The weapon kind of an item (nil if it is no weapon or its name names no kind)
+-- and its group's kinds.
+local function weapon_kind(info)
+    local list = WEAPON_KINDS[info.group]
+    if not list then return nil, nil end
+    if #list == 1 then return list[1], list end
+    -- Case-insensitive: Weapon_T5_2H_Greatsword_01/_02 spell it with a small s.
+    local name = info.name:lower()
+    for _, k in ipairs(list) do
+        if name:find("_" .. k:lower(), 1, true) then return k, list end
+    end
+    return nil, list
+end
+
+-- Armor archetypes: the weapons each one is for, and skills it takes besides.
+local ARMOR_KINDS = {
+    Armor_Mage = { "Wand", "Staff" },
+    Armor_Ranger = { "Bow", "Daggers", "GreatAxe", "GreatSword", "Hammer" },
+    Armor_Warrior = { "Axe", "Mace", "Sword", "GreatAxe", "GreatSword", "Hammer" },
+}
+local ARMOR_EXTRA = {
+    Armor_Ranger = kinds(nil, "Thrust", "SleightOfHand"),
+    Armor_Warrior = kinds(nil, "Thrust", "SleightOfHand"),
+}
+
+-- Whether the item's skills are restricted (weapons, class armor, the Greatsword
+-- arms); everything else takes any skill.
+local function skill_rule(info)
+    if WEAPON_KINDS[info.group] or ARMOR_KINDS[info.group] then return true end
+    return info.name:find("_Unique_Greatsword_", 1, true) ~= nil
+end
+
+-- Whether perk p may sit on the item: always for non-skills, skills that work
+-- with any weapon and unrestricted items. A weapon whose kind is not in its name
+-- takes only skills that fit every kind of its group.
+local function fits_item(info, p)
+    if not perk_class[p] then return true end
+    local key = skill_key(p) or ""
+    local allowed = WEAPON_SKILLS[key]
+    if not allowed then return true end
+    local armor = ARMOR_KINDS[info.group]
+    if armor then
+        if ARMOR_EXTRA[info.group] and ARMOR_EXTRA[info.group][key] then return true end
+        for _, k in ipairs(armor) do
+            if allowed[k] then return true end
+        end
+        return false
+    end
+    if info.name:find("_Unique_Greatsword_", 1, true) then return allowed.GreatSword == true end
+    local kind, list = weapon_kind(info)
+    if not list then return true end
+    if kind then return allowed[kind] == true end
+    for _, k in ipairs(list) do
+        if not allowed[k] then return false end
+    end
+    return true
+end
+
+do
+    -- A key that names no skill would let that skill through unchecked.
+    local known = {}
+    for _, c in ipairs(CLASSES) do
+        for _, s in ipairs(skills[c]) do known[skill_key(s.one) or ""] = true end
+    end
+    local unknown = {}
+    for k in pairs(WEAPON_SKILLS) do
+        if not known[k] then unknown[#unknown + 1] = k end
+    end
+    table.sort(unknown)
+    if #unknown > 0 then
+        log("WARNING: weapon skill rules name skills no vanilla item carries (typo?): " .. table.concat(unknown, ", "))
+    end
+end
+
+---------------------------------------------------------------------------
 -- Roll perks
 --
 -- Each variant has one theme (developer's themes): Sustain, Empower,
@@ -503,7 +640,8 @@ end
 -- Theme perks come from the item's wide group pool, swapped for the member of
 -- their tier line that fits the item's tier. Skills only from the item's class
 -- (melee weapons/shields Warrior, bows/daggers Ranger, staffs/wands Mage,
--- armor by class) or Generic; a skill appears once per item. Every second
+-- armor by class) or Generic; a skill appears once per item; on weapons only
+-- skills that work with that weapon in hand ("Weapon skills"). Every second
 -- variant is a hybrid whose skill slot and capstone come from another class.
 ---------------------------------------------------------------------------
 
@@ -592,6 +730,7 @@ local function roll_perks(guid, info, theme, attempt, hybrid)
         if c then
             if c ~= "Generic" and c ~= class and c ~= secondary then return false end
             if bases[skill_base(p)] then return false end
+            if not fits_item(info, p) then return false end
         end
         if elements then
             local e = element_of(p)
@@ -706,7 +845,8 @@ end
 ---------------------------------------------------------------------------
 
 ---------------------------------------------------------------------------
--- Pinned rolls (data/pinned.txt, shipped with the mod, append-only)
+-- Pinned rolls (data/pinned.txt, shipped with the mod; lines are never removed,
+-- and their perks change only by a deliberate rule change, e.g. 0.16.0 weapon skills)
 --
 -- Saves store a variant's ItemId, and its perks come from this list, so a
 -- game update that adds, removes or renames perks cannot silently change the
@@ -788,6 +928,60 @@ local function create_variant(original, info, source, index, perks)
     return { original = original, original_id = info.id, index = index, guid = guid, id = id, name = name, perks = perks }
 end
 
+-- Skills on pinned variants (0.16.0): a skill that breaks the weapon/armor rules
+-- (see "Weapon skills") is replaced by one that fits, at the same level (+2 stays
+-- +2 where the new skill has a +2 perk), from the class of the skill it replaces
+-- when one fits (keeps hybrids hybrid), else from the item's class, else any class;
+-- Generic skills count for all. Every other slot, the GUID and the ItemId stay, so
+-- items players own keep existing and take the new perks (perks live in the
+-- variant's ItemInfo, not in saves). Deterministic, so client and server build the
+-- same perks. Once the exported pinned.txt is shipped, this finds nothing to replace.
+local SKILL_FIX_SEED = "perk-variants/skill-fit-v1"
+local function fix_skills(original, info, index, perks)
+    if not skill_rule(info) then return 0, 0 end
+    local bases = {}
+    for _, p in ipairs(perks) do
+        if p ~= NONE and perk_class[p] then bases[skill_base(p)] = true end
+    end
+    local fixed, unfixed = 0, 0
+    for slot, p in ipairs(perks) do
+        if p ~= NONE and perk_class[p] and not fits_item(info, p) then
+            local next_int = rng(SKILL_FIX_SEED .. "|" .. original .. "|" .. index .. "|" .. slot)
+            local classes, listed = {}, {}
+            local function add(c)
+                if c and skills[c] and not listed[c] then listed[c] = true; classes[#classes + 1] = c end
+            end
+            add(perk_class[p])     -- Generic has no list of its own: skipped
+            add(known_class(info))
+            for _, c in ipairs(CLASSES) do add(c) end
+            local levels = (perk_names[p] or ""):find("_2$") and { true, false } or { false }
+            local q
+            for _, c in ipairs(classes) do
+                for _, two in ipairs(levels) do
+                    local ok = {}
+                    for _, s in ipairs(skills[c]) do
+                        local cand
+                        if two then cand = s.two else cand = s.one end
+                        if cand and not bases[s.base] and fits_item(info, cand) then ok[#ok + 1] = cand end
+                    end
+                    if #ok > 0 then q = ok[next_int(#ok)]; break end
+                end
+                if q then break end
+            end
+            if q then
+                perks[slot] = q
+                bases[skill_base(q)] = true
+                fixed = fixed + 1
+            else
+                unfixed = unfixed + 1
+                log(string.format("WARNING: no fitting skill to replace %s on %s__PV%d slot %d", perk_names[p] or p, info.name, index, slot))
+            end
+        end
+    end
+    return fixed, unfixed
+end
+stats.skill_fixed, stats.skill_fixed_variants, stats.skill_unfixed = 0, 0, 0
+
 for _, original in ipairs(item_order) do
     local info = items[original]
     local seen = { [table.concat(info.perks, ",")] = true } -- never duplicate vanilla
@@ -818,6 +1012,10 @@ for _, original in ipairs(item_order) do
                 log(string.format("pinned perk %s of %s slot %d no longer exists, using vanilla", p, info.name, slot))
             end
         end
+        local fixed, unfixed = fix_skills(original, info, e.index, perks)
+        stats.skill_fixed = stats.skill_fixed + fixed
+        stats.skill_unfixed = stats.skill_unfixed + unfixed
+        if fixed > 0 then stats.skill_fixed_variants = stats.skill_fixed_variants + 1 end
         seen[table.concat(perks, ",")] = true
         local v = create_variant(original, info, source, e.index, perks)
         v.pinned = true
@@ -864,6 +1062,15 @@ do
     log(string.format("created %d variants (%s)", #variants, table.concat(parts, ", ")))
     log(string.format("pinned rolls: %d variants from the pinned list (%d slots fell back to vanilla), %d newly rolled (not pinned yet)",
         stats.pinned, stats.fallback_slots, stats.rolled))
+    -- Every variant, pinned or rolled, checked against the weapon and armor rules.
+    local broken = 0
+    for _, v in ipairs(variants) do
+        for _, p in ipairs(v.perks) do
+            if p ~= NONE and not fits_item(items[v.original], p) then broken = broken + 1 end
+        end
+    end
+    log(string.format("skill fit: %d pinned skills replaced on %d variants (%d without a fitting replacement); skills breaking the weapon/armor rules now: %d",
+        stats.skill_fixed, stats.skill_fixed_variants, stats.skill_unfixed, broken))
     local lost = {}
     for original, list in pairs(pinned) do
         if not items[original] then lost[#lost + 1] = original .. " (" .. #list .. " variants)" end
@@ -1489,7 +1696,7 @@ if loader.features.export then
     -- Pinned list for the next release: every variant built now, plus pinned
     -- entries whose item is gone (kept, append-only: the item may come back).
     local out = {
-        "# forged-and-found pinned rolls (append-only; never edit or remove shipped lines)",
+        "# forged-and-found pinned rolls (never remove shipped lines; perks change only by a deliberate rule change)",
         "# <original GUID> <index> <variant GUID> <perk GUID per slot>  # debug names",
     }
     local originals, listed = {}, {}

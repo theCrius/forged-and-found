@@ -17,7 +17,13 @@ Every item that can drop as Epic or Legendary gets six **variants**: the same it
 different set of enhancements (the right-hand "Enhancements" column of its upgrade rows).
 Variants follow themes (sustain, empower, elemental, physical, crit, character skills),
 some mix skills from a second class, and a Legendary variant always ends with a +2
-character skill.
+character skill. A weapon's enhancements only count while it is in your hand, so a weapon
+variant only carries skills that work with that weapon: no bow skills on a sword, no wand
+skills on a staff. Armor variants follow their archetype: light (mage) armor gets skills for
+wands and staves, medium (ranger) armor for bows, daggers and two-handed weapons, heavy
+(warrior) armor for one- and two-handed melee weapons. Skills that work with any weapon
+(resistances, attributes, auras, elemental damage, ...) can appear on anything. Rings,
+shields and wards can carry any skill.
 
 When an Epic or Legendary item drops from a **random** chest, enemy remains or boss loot,
 it rolls among the vanilla item and its six variants. Fixed chest contents, items you pick
