@@ -41,6 +41,7 @@ stay Legendary). Each rarity step up or down changes the crafting cost by 25%.
 ### Crafted lore items
 Copies of lore items crafted at the artisans become Legendary (crafting cost +50%) and are
 raised to the item level of the crafted armor of their tier, also in the crafting preview.
+The Lunar Year event weapons sold by the event trader count as lore items too.
 
 Items crafted before you switch a crafting feature on or off keep the rarity they were
 crafted with.

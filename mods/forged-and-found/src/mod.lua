@@ -1094,15 +1094,25 @@ end
 -- (inferred, to be tested).
 ---------------------------------------------------------------------------
 
+-- Lore copies: "Craft_..._Lore_..." and, since 0.16.0, the Lunar Year event
+-- weapons the event trader sells ("Craft_..._chineseNewYear_..."). Those are lore
+-- copies in all but name (fixed Rare, 5 perks, the lore copies' item levels and
+-- the same item tags); 0.15.x left them to the level rule below, which made them
+-- Epic at most (a player's report, 2026-11-09).
+local function is_lore_copy(name)
+    return name:find("^Craft_") ~= nil and (name:find("_Lore_") ~= nil or name:find("_chineseNewYear_") ~= nil)
+end
+
 local RARITY_RANK = { Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5 }
 local rarity_steps = {}   -- crafted item guid -> rarity steps changed by the mod (+ up, - down)
 local CRAFTED_LORE_RARITY = "Legendary"
 if not CRAFTED_LORE then
     log("crafted lore items: off (vanilla rarity)")
 else
-    local changed = 0
+    local changed, event = 0, 0
     for _, original in ipairs(item_order) do
-        if items[original].name:find("^Craft_") and items[original].name:find("_Lore_") then
+        if is_lore_copy(items[original].name) then
+            if not items[original].name:find("_Lore_") then event = event + 1 end
             local resource = game.assets.get_resource(original, "keen::ItemInfo")
             local text = text_of(resource)
             if text:match('"rarity":"(%a+)"') ~= CRAFTED_LORE_RARITY or text:match('"generateRarity":(%a+)') ~= "false" then
@@ -1117,15 +1127,16 @@ else
             end
         end
     end
-    log(string.format("crafted lore items: %d set to %s", changed, CRAFTED_LORE_RARITY))
+    log(string.format("crafted lore items: %d set to %s (%d of the lore copies are Lunar Year event weapons)",
+        changed, CRAFTED_LORE_RARITY, event))
 end
 
 ---------------------------------------------------------------------------
 -- Crafted equipment rarity by base level (developer's rule, 2026-11-01)
 --
 -- Non-lore armor, shields and weapons the artisans craft (recipe outputs:
--- Armor_*, Shield_*, Weapon_*, and non-lore Craft_* such as the Chinese New
--- Year event weapons) get their rarity from their base item level: up to 5
+-- Armor_*, Shield_*, Weapon_*, and Craft_* that are no lore copy; the Lunar Year
+-- event weapons count as lore copies since 0.16.0) get their rarity from their base item level: up to 5
 -- Common, up to 10 Uncommon, up to 15 Rare, above that Epic. Already Legendary
 -- crafted items (Vorgoth set) stay Legendary. Crafted items are separate types
 -- from loot items (*_Loot) and never get variants, so loot is unaffected.
@@ -1146,7 +1157,7 @@ else
         local info = items[original]
         local n = info.name
         local equipment = n:find("^Armor_") or n:find("^Shield_") or n:find("^Weapon_")
-            or (n:find("^Craft_") and not n:find("_Lore_"))
+            or (n:find("^Craft_") and not is_lore_copy(n))
         if crafted[original] and equipment and not info.gen then
             local resource = game.assets.get_resource(original, "keen::ItemInfo")
             local text = text_of(resource)
@@ -1213,11 +1224,12 @@ else
     for _, original in ipairs(item_order) do
         local info = items[original]
         local target = info.tier and armor_level[info.tier]
-        if target and info.name:find("^Craft_") and info.name:find("_Lore_") then
+        if target and is_lore_copy(info.name) then
             local resource = game.assets.get_resource(original, "keen::ItemInfo")
             local min, max = text_of(resource):match('"itemLevelRange":{"minLevel":(%d+),"maxLevel":(%d+)}')
             min, max = tonumber(min), tonumber(max)
-            if min then
+            -- The crafting preview table below is about lore crafting: real lore copies only.
+            if min and info.name:find("_Lore_") then
                 lore_counts[info.tier] = lore_counts[info.tier] or {}
                 lore_counts[info.tier][min] = (lore_counts[info.tier][min] or 0) + 1
             end
