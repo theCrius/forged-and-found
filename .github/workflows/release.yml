@@ -15,7 +15,10 @@ permissions:
 
 jobs:
   package:
-    runs-on: windows-latest
+    # A fixed image, not windows-latest: native/msvc.ps1 needs MSVC 14.44.35207, the toolset of
+    # this image's Visual Studio 2022 17.14 (the build fails with a clear error if an image update
+    # removes it). windows-2025 (Visual Studio 2026) carries it side by side, as a fallback image.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
 

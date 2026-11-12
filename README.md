@@ -4,7 +4,7 @@ An Enshrouded mod for [ShroudForge](https://github.com/bonsaibauer/shroudforge) 
 looted and crafted equipment more interesting. It has three features plus two options.
 Each one is a separate switch in the mod's ShroudForge settings, and all start **off**.
 
-> **Beta.** Back up your saves before installing or updating it.
+> Back up your saves before installing or updating it.
 >
 > **Fully tested on game version 1287369** (the Steam update of 2026-11-04), client and
 > dedicated server. Your version is in `enshrouded.log` in the game folder, line
@@ -157,7 +157,17 @@ does, and refuses to write anything it cannot convert safely.
 
 ## Building from source
 
-Needs Windows, PowerShell 7 and the Visual Studio 2022 Build Tools (C++ workload).
+Needs Windows, PowerShell 7 and the **MSVC 14.44.35207** compiler, from either:
+
+- **Visual Studio 2022 version 17.14** (the free Build Tools are enough) with the "Desktop
+  development with C++" workload, or
+- a newer Visual Studio (2026 included) with the individual component
+  "MSVC v143 - VS 2022 C++ x64/x86 build tools (v14.44-17.14)", added in the Visual Studio Installer.
+
+The compiler is pinned on purpose: another MSVC version builds a different DLL from the same source,
+and only a DLL that was tested in game should be released. With the pinned compiler, a local build
+and GitHub's release build produce the same DLL and the same `variants-reverter.exe`. The build
+scripts stop with an error naming what is missing rather than build with another compiler.
 
 ```powershell
 ./tools/package.ps1     # builds everything and writes dist/forged-and-found-<version>.zip and dist/variants-reverter-<version>.zip
